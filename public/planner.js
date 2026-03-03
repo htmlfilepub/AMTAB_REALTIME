@@ -1,3 +1,8 @@
+function apiUrl(pathAndQuery) {
+  const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
+  return new URL(normalized, import.meta.url).toString();
+}
+
 export async function requestStaticPlan({
   origin,
   destinationStopId,
@@ -30,9 +35,16 @@ export async function requestStaticPlan({
     params.set('maxTransfers', String(maxTransfers));
   }
 
-  const response = await fetch(`/api/plan?${params.toString()}`, { cache: 'no-store' });
+  const response = await fetch(apiUrl(`api/plan?${params.toString()}`), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error(`Planner HTTP ${response.status}`);
+  }
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    const raw = await response.text();
+    const preview = raw.slice(0, 80).replace(/\s+/g, ' ').trim();
+    throw new Error(`Planner non restituisce JSON valido (${preview || 'risposta vuota'})`);
   }
 
   return response.json();

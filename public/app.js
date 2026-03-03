@@ -1,5 +1,21 @@
 import { requestStaticPlan } from './planner.js';
 
+function apiUrl(pathAndQuery) {
+  const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
+  return new URL(normalized, import.meta.url).toString();
+}
+
+async function readJsonResponse(response, label) {
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    return response.json();
+  }
+
+  const raw = await response.text();
+  const preview = raw.slice(0, 80).replace(/\s+/g, ' ').trim();
+  throw new Error(`${label} non restituisce JSON valido (${preview || 'risposta vuota'})`);
+}
+
 const tableBody = document.querySelector('#tableBody');
 const message = document.querySelector('#message');
 const refreshBtn = document.querySelector('#refreshBtn');
@@ -826,7 +842,7 @@ async function getTripDetailsForRouteSegment(routeId, tripId, currentStopId) {
     delay: '0'
   });
 
-  const response = await fetch(`/api/tripdetails?${params.toString()}`, { cache: 'no-store' });
+  const response = await fetch(apiUrl(`api/tripdetails?${params.toString()}`), { cache: 'no-store' });
   if (!response.ok) {
     return null;
   }
@@ -1092,7 +1108,7 @@ async function pickBestBusForDestination(stopId, origin, onDebug = null) {
           delay: String(Number.isNaN(candidate.delay) ? 0 : candidate.delay)
         });
 
-        const response = await fetch(`/api/tripdetails?${params.toString()}`, { cache: 'no-store' });
+        const response = await fetch(apiUrl(`api/tripdetails?${params.toString()}`), { cache: 'no-store' });
         if (!response.ok) {
           skipNoDetails += 1;
           continue;
@@ -1514,7 +1530,7 @@ async function loadTripDetails(context) {
     delay: String(context.delay || 0)
   });
 
-  const response = await fetch(`/api/tripdetails?${params.toString()}`, {
+  const response = await fetch(apiUrl(`api/tripdetails?${params.toString()}`), {
     cache: 'no-store'
   });
 
@@ -1852,9 +1868,9 @@ async function loadData() {
 
   try {
     const [tripUpdatesResponse, vehiclePositionResponse, stopsResponse] = await Promise.all([
-      fetch('/api/tripupdates', { cache: 'no-store' }),
-      fetch('/api/vehicleposition', { cache: 'no-store' }),
-      fetch('/api/stops', { cache: 'no-store' })
+      fetch(apiUrl('api/tripupdates'), { cache: 'no-store' }),
+      fetch(apiUrl('api/vehicleposition'), { cache: 'no-store' }),
+      fetch(apiUrl('api/stops'), { cache: 'no-store' })
     ]);
 
     if (!tripUpdatesResponse.ok) {
@@ -1865,15 +1881,21 @@ async function loadData() {
       throw new Error(`VehiclePosition HTTP ${vehiclePositionResponse.status}`);
     }
 
-    if (!stopsResponse.ok) {
-      throw new Error(`Stops HTTP ${stopsResponse.status}`);
-    }
-
-    const [tripUpdatesXml, vehiclePositionXml, stopsJson] = await Promise.all([
+    const [tripUpdatesXml, vehiclePositionXml] = await Promise.all([
       tripUpdatesResponse.text(),
-      vehiclePositionResponse.text(),
-      stopsResponse.json()
+      vehiclePositionResponse.text()
     ]);
+
+    let stopsJson = { stops: {}, stopLocations: {} };
+    if (stopsResponse.ok) {
+      try {
+        stopsJson = await readJsonResponse(stopsResponse, 'Stops API');
+      } catch (error) {
+        appendRouteDebug(`Stops non disponibili: ${error.message}`);
+      }
+    } else {
+      appendRouteDebug(`Stops HTTP ${stopsResponse.status}`);
+    }
 
     stopNameById = new Map(Object.entries(stopsJson?.stops || {}));
     stopLocationById = new Map(
