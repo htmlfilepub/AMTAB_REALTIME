@@ -5,6 +5,19 @@ function apiUrl(pathAndQuery) {
   return new URL(normalized, import.meta.url).toString();
 }
 
+function apiRootUrl(pathAndQuery) {
+  const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
+  if (typeof window === 'undefined') {
+    return `/${normalized}`;
+  }
+  return new URL(`/${normalized}`, window.location.origin).toString();
+}
+
+function buildApiCandidates(pathAndQuery) {
+  const candidates = [apiRootUrl(pathAndQuery), apiUrl(pathAndQuery)];
+  return [...new Set(candidates)];
+}
+
 async function readJsonResponse(response, label) {
   const contentType = (response.headers.get('content-type') || '').toLowerCase();
   if (contentType.includes('application/json')) {
@@ -77,6 +90,8 @@ let destinationPosition = null;
 let destinationMarker = null;
 let currentRouteOptions = [];
 let selectedRouteOptionKey = '';
+let stopsEndpointCache = '';
+let stopsApiDisabled = false;
 const tripDetailsCache = new Map();
 const routeDebugLines = [];
 
@@ -1867,10 +1882,9 @@ async function loadData() {
   message.textContent = 'Aggiornamento in corso...';
 
   try {
-    const [tripUpdatesResponse, vehiclePositionResponse, stopsResponse] = await Promise.all([
-      fetch(apiUrl('api/tripupdates'), { cache: 'no-store' }),
-      fetch(apiUrl('api/vehicleposition'), { cache: 'no-store' }),
-      fetch(apiUrl('api/stops'), { cache: 'no-store' })
+    const [tripUpdatesResponse, vehiclePositionResponse] = await Promise.all([
+      fetch(apiRootUrl('api/tripupdates'), { cache: 'no-store' }),
+      fetch(apiRootUrl('api/vehicleposition'), { cache: 'no-store' })
     ]);
 
     if (!tripUpdatesResponse.ok) {
@@ -1887,14 +1901,32 @@ async function loadData() {
     ]);
 
     let stopsJson = { stops: {}, stopLocations: {} };
-    if (stopsResponse.ok) {
-      try {
-        stopsJson = await readJsonResponse(stopsResponse, 'Stops API');
-      } catch (error) {
-        appendRouteDebug(`Stops non disponibili: ${error.message}`);
+    if (!stopsApiDisabled) {
+      const stopCandidates = stopsEndpointCache
+        ? [stopsEndpointCache]
+        : buildApiCandidates('api/stops');
+
+      let lastStopsError = null;
+      for (const stopEndpoint of stopCandidates) {
+        try {
+          const stopsResponse = await fetch(stopEndpoint, { cache: 'no-store' });
+          if (!stopsResponse.ok) {
+            throw new Error(`Stops HTTP ${stopsResponse.status}`);
+          }
+
+          stopsJson = await readJsonResponse(stopsResponse, 'Stops API');
+          stopsEndpointCache = stopEndpoint;
+          lastStopsError = null;
+          break;
+        } catch (error) {
+          lastStopsError = error;
+        }
       }
-    } else {
-      appendRouteDebug(`Stops HTTP ${stopsResponse.status}`);
+
+      if (lastStopsError) {
+        stopsApiDisabled = true;
+        appendRouteDebug(`Stops non disponibili: ${lastStopsError.message}`);
+      }
     }
 
     stopNameById = new Map(Object.entries(stopsJson?.stops || {}));

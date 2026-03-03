@@ -3,6 +3,19 @@ function apiUrl(pathAndQuery) {
   return new URL(normalized, import.meta.url).toString();
 }
 
+function apiRootUrl(pathAndQuery) {
+  const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
+  if (typeof window === 'undefined') {
+    return `/${normalized}`;
+  }
+  return new URL(`/${normalized}`, window.location.origin).toString();
+}
+
+function buildApiCandidates(pathAndQuery) {
+  const candidates = [apiRootUrl(pathAndQuery), apiUrl(pathAndQuery)];
+  return [...new Set(candidates)];
+}
+
 export async function requestStaticPlan({
   origin,
   destinationStopId,
@@ -35,17 +48,26 @@ export async function requestStaticPlan({
     params.set('maxTransfers', String(maxTransfers));
   }
 
-  const response = await fetch(apiUrl(`api/plan?${params.toString()}`), { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`Planner HTTP ${response.status}`);
+  let lastError = null;
+  const endpoints = buildApiCandidates(`api/plan?${params.toString()}`);
+
+  for (const endpoint of endpoints) {
+    const response = await fetch(endpoint, { cache: 'no-store' });
+    if (!response.ok) {
+      lastError = new Error(`Planner HTTP ${response.status}`);
+      continue;
+    }
+
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const raw = await response.text();
+      const preview = raw.slice(0, 80).replace(/\s+/g, ' ').trim();
+      lastError = new Error(`Planner non restituisce JSON valido (${preview || 'risposta vuota'})`);
+      continue;
+    }
+
+    return response.json();
   }
 
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  if (!contentType.includes('application/json')) {
-    const raw = await response.text();
-    const preview = raw.slice(0, 80).replace(/\s+/g, ' ').trim();
-    throw new Error(`Planner non restituisce JSON valido (${preview || 'risposta vuota'})`);
-  }
-
-  return response.json();
+  throw lastError || new Error('Planner non disponibile');
 }
