@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "adm-zip": "^0.5.16"
+    "adm-zip": "^0.5.16",
+    "jszip": "^3.10.1"
   },
   "scripts": {
     "start": "node server.mjs"
