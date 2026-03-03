@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MUVT AMTAB Bari - Monitor Live</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>MUVT AMTAB Bari</h1>
+        <p class="subtitle">Monitor in diretta dal feed GTFS-RT</p>
+      </header>
+
+      <section class="controls">
+        <label class="line-select-wrap" for="lineSelect">
+          Linea
+          <select id="lineSelect"></select>
+        </label>
+        <label class="auto-refresh">
+          <input id="mapAllToggle" type="checkbox" />
+          Mostra tutti i pullman sulla mappa
+        </label>
+        <button id="refreshBtn" type="button">Aggiorna ora</button>
+        <label class="auto-refresh">
+          <input id="autoRefresh" type="checkbox" checked />
+          Aggiornamento automatico (15s)
+        </label>
+      </section>
+
+      <section class="status-cards">
+        <article class="card">
+          <h2>Veicoli monitorati</h2>
+          <p id="vehiclesCount">-</p>
+        </article>
+        <article class="card">
+          <h2>Media ritardo</h2>
+          <p id="avgDelay">-</p>
+        </article>
+        <article class="card">
+          <h2>Ultimo aggiornamento feed</h2>
+          <p id="feedTimestamp">-</p>
+        </article>
+      </section>
+
+      <section class="map-wrap">
+        <h2 id="mapTitle">Mappa live</h2>
+        <div id="map"></div>
+      </section>
+
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Veicolo</th>
+              <th>Trip ID</th>
+              <th>Fermata</th>
+              <th>Arrivo previsto</th>
+              <th>Ritardo</th>
+              <th>Posizione</th>
+              <th>Velocità</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody">
+            <tr>
+              <td colspan="7" class="placeholder">Caricamento dati...</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <p id="message" class="message"></p>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="app.js" type="module"></script>
+  </body>
+  </html>
