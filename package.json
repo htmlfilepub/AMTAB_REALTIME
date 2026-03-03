@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
   "scripts": {
     "start": "node server.mjs"
   }

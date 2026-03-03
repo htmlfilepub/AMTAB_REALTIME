@@ -55,6 +55,56 @@
         <div id="map"></div>
       </section>
 
+      <section class="details-wrap" id="tripDetailsPanel">
+        <h2>Dettagli corsa selezionata</h2>
+        <p id="tripDetailsSummary" class="subtitle">Clicca su un bus nella mappa per vedere percorso completo, prossime fermate e calendario servizio.</p>
+        <div class="details-grid">
+          <article class="card">
+            <h3>Prossime fermate</h3>
+            <ul id="upcomingStops" class="details-list"></ul>
+          </article>
+          <article class="card">
+            <h3>Calendario corsa</h3>
+            <p id="serviceCalendarText" class="details-text">-</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="details-wrap" id="routingPanel">
+        <h2>Ricerca percorso (tempo reale)</h2>
+        <p class="subtitle">Ricerca del percorso migliore dalla tua posizione (GPS o manuale) al punto di arrivo scelto su mappa.</p>
+        <div class="routing-controls">
+          <button id="locateBtn" type="button">Usa la mia posizione</button>
+          <button id="pickFromMapBtn" type="button">Scegli partenza dalla mappa</button>
+          <button id="pickDestinationFromMapBtn" type="button">Scegli arrivo dalla mappa</button>
+          <label class="line-select-wrap" for="destinationStopSelect">
+            Fermata arrivo associata
+            <select id="destinationStopSelect"></select>
+          </label>
+          <button id="routeNowBtn" type="button">Calcola percorso</button>
+          <label class="auto-refresh">
+            <input id="allowTransfers" type="checkbox" checked />
+            Consenti cambi
+          </label>
+          <label class="auto-refresh">
+            <input id="routeAutoRefresh" type="checkbox" checked />
+            Aggiorna percorso live
+          </label>
+          <label class="auto-refresh">
+            <input id="routeDebugToggle" type="checkbox" checked />
+            Debug routing
+          </label>
+        </div>
+        <p id="mapDestinationText" class="details-text">Arrivo non impostato. Clicca “Scegli arrivo dalla mappa”.</p>
+        <p id="routeSummaryText" class="details-text">Posizione non rilevata.</p>
+        <ol id="routeSteps" class="details-list"></ol>
+        <div id="routeOptionsList" class="route-options"></div>
+        <div class="debug-wrap">
+          <h3>Debug percorso</h3>
+          <pre id="routeDebugOutput" class="debug-output">Debug attivo.</pre>
+        </div>
+      </section>
+
       <section class="table-wrap">
         <table>
           <thead>

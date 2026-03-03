@@ -85,6 +85,159 @@ button:hover {
   margin-bottom: 16px;
 }
 
+.details-wrap {
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  margin-bottom: 16px;
+}
+
+.details-wrap h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 12px;
+}
+
+.routing-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+#routeSteps {
+  margin-top: 10px;
+}
+
+.debug-wrap {
+  margin-top: 12px;
+  border: 1px solid #d0dae7;
+  border-radius: 8px;
+  background: #f7faff;
+  padding: 10px;
+}
+
+.debug-wrap h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #385678;
+}
+
+.debug-output {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #1f3652;
+  white-space: pre-wrap;
+}
+
+.details-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.details-list li {
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: #2d4668;
+}
+
+.route-options {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.route-option-card {
+  border: 1px solid #d0dae7;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.route-option-card--extra {
+  margin-top: 8px;
+  background: #fbfdff;
+}
+
+.route-option-card--best {
+  border-color: #0b63ce;
+  box-shadow: 0 0 0 1px rgba(11, 99, 206, 0.2);
+}
+
+.route-option-card--selected {
+  border-color: #1565c0;
+  box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.22);
+}
+
+.route-option-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #12365e;
+}
+
+.route-option-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.route-option-chip {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eef4fc;
+  color: #224264;
+}
+
+.route-option-line {
+  margin: 0;
+  font-size: 12px;
+  color: #2d4668;
+  line-height: 1.35;
+}
+
+.route-option-more {
+  margin-top: 8px;
+  border-top: 1px dashed #d0dae7;
+  padding-top: 8px;
+}
+
+.route-option-more > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #12365e;
+  font-weight: 600;
+}
+
+.route-option-more > summary:hover {
+  color: #0b63ce;
+}
+
+.route-option-more-list {
+  margin-top: 6px;
+}
+
+.details-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #2d4668;
+  line-height: 1.4;
+}
+
 .map-wrap h2 {
   margin: 0 0 10px;
   font-size: 16px;
@@ -206,5 +359,9 @@ thead {
 
   #map {
     height: 300px;
+  }
+
+  .details-grid {
+    grid-template-columns: 1fr;
   }
 }
