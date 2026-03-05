@@ -70,6 +70,90 @@ button:hover {
   gap: 8px;
 }
 
+.toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.semafori-disclaimer,
+.semafori-zoom-hint {
+  width: 100%;
+  color: #667c99;
+  font-size: 12px;
+}
+
+.semaforo-icon {
+  width: 16px;
+  height: 32px;
+  display: inline-flex;
+}
+
+.semaforo-svg {
+  width: 16px;
+  height: 32px;
+}
+
+.semaforo-luce {
+  opacity: 0.16;
+  transition: opacity 0.3s ease;
+}
+
+.semaforo-luce.attiva {
+  opacity: 1;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+.semaforo-lampeggiante .luce-giallo {
+  opacity: 1;
+  animation: blink-giallo 0.8s ease-in-out infinite;
+}
+
+@keyframes blink-giallo {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.15;
+  }
+}
+
+.semaforo-popup-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-verde {
+  background: #22c55e;
+  color: #fff;
+}
+
+.badge-giallo {
+  background: #eab308;
+  color: #111;
+}
+
+.badge-rosso {
+  background: #ef4444;
+  color: #fff;
+}
+
+.badge-lampeggiante {
+  background: #f97316;
+  color: #fff;
+}
+
+.badge-spento {
+  background: #6b7280;
+  color: #fff;
+}
+
 .status-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -364,4 +448,60 @@ thead {
   .details-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Feed offline banner */
+.feed-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  font-weight: 500;
+  animation: banner-slide-in 0.3s ease-out;
+}
+
+.feed-banner[hidden] {
+  display: none;
+}
+
+.feed-banner--warn {
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffc107;
+}
+
+.feed-banner--error {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.feed-banner--ok {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.feed-banner button {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  color: inherit;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+@keyframes banner-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.popup-stale {
+  color: #b0690f;
+  font-size: 0.85em;
+  font-style: italic;
 }

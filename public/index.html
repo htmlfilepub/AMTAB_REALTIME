@@ -14,6 +14,11 @@
   </head>
   <body>
     <main class="container">
+      <div id="feedBanner" class="feed-banner" hidden>
+        <span id="feedBannerText"></span>
+        <button id="feedBannerDismiss" type="button" aria-label="Chiudi">&times;</button>
+      </div>
+
       <header class="header">
         <h1>MUVT AMTAB Bari</h1>
         <p class="subtitle">Monitor in diretta dal feed GTFS-RT</p>
@@ -33,6 +38,13 @@
           <input id="autoRefresh" type="checkbox" checked />
           Aggiornamento automatico (15s)
         </label>
+        <label class="toggle-control">
+          <input type="checkbox" id="toggleSemafori" /> 🚦 Mostra Semafori
+        </label>
+        <small id="semaforiDisclaimer" class="semafori-disclaimer">
+          ⚠️ Stato semafori simulato — nessuna API real-time disponibile. Posizioni reali da Open Data Comune di Bari (CC0).
+        </small>
+        <small id="semaforiZoomHint" class="semafori-zoom-hint"></small>
       </section>
 
       <section class="status-cards">

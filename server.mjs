@@ -1,14 +1,19 @@
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
+import { calculateTrafficLightState } from './public/traffic-lights.js';
 
 const PORT = process.env.PORT || 3000;
 const FEED_URL = 'https://avl.amtab.it/WSExportGTFS_RT/api/gtfs/TripUpdates';
 const VEHICLE_FEED_URL = 'https://avl.amtab.it/WSExportGTFS_RT/api/gtfs/VechiclePosition';
 const GTFS_STATIC_URL = 'https://www.amtabservizio.it/gtfs/google_transit.zip';
+const SEMAFORI_CKAN_URL = 'https://opendata.comune.bari.it/api/3/action/datastore_search?resource_id=1b76f2d0-4a6c-4e8a-b31d-d006fbd42f7e&limit=5000';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const STOPS_CACHE_MS = 30 * 60 * 1000;
+const SEMAFORI_CACHE_MS = 24 * 60 * 60 * 1000;
+const NOMINATIM_DELAY_MS = 1100;
 const PLANNER_WALK_SPEED_MPS = 1.35;
 const PLANNER_MAX_RESULTS = 20;
 
@@ -17,9 +22,33 @@ const gtfsCache = {
   data: null
 };
 
+const semaforiCache = {
+  expiresAt: 0,
+  data: null,
+  source: 'unavailable'
+};
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, 'public');
+const semaforiCacheFile = path.join(__dirname, 'semafori_cache.json');
+const semaforiCkanFallbackFile = path.join(__dirname, 'datastore_search.json');
+const semaforiOverridesFile = path.join(__dirname, 'semafori_overrides.json');
+
+let semaforiOverridesCache = null;
+
+const ONDA_VERDE_STREETS = [
+  'VIA DANTE',
+  'CORSO CAVOUR',
+  'VIA DE GIOSA',
+  'PIAZZA LUIGI DI SAVOIA',
+  'VIA DE ROSSI',
+  'CORSO VITTORIO EMANUELE II',
+  'VIA QUINTINO SELLA',
+  'VIALE EINAUDI',
+  'VIALE KENNEDY',
+  'VIA BRIGATA REGINA'
+];
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -30,12 +59,422 @@ const mimeTypes = {
   '.svg': 'image/svg+xml; charset=utf-8'
 };
 
-function send(res, status, body, contentType = 'text/plain; charset=utf-8') {
+function send(res, status, body, contentType = 'text/plain; charset=utf-8', extraHeaders = {}) {
   res.writeHead(status, {
+    ...extraHeaders,
     'Content-Type': contentType,
     'Cache-Control': 'no-store'
   });
   res.end(body);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function normalizeText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function toNumber(value) {
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\s+/g, '').replace(',', '.');
+    const n = Number(normalized);
+    return Number.isNaN(n) ? NaN : n;
+  }
+
+  const n = Number(value);
+  return Number.isNaN(n) ? NaN : n;
+}
+
+function getField(record, candidates) {
+  for (const key of candidates) {
+    if (record[key] != null && String(record[key]).trim() !== '') {
+      return record[key];
+    }
+  }
+  return '';
+}
+
+function detectOndaVerdeStreet(indirizzo) {
+  const normalized = normalizeText(indirizzo);
+  for (const street of ONDA_VERDE_STREETS) {
+    if (normalized.includes(normalizeText(street))) {
+      return street;
+    }
+  }
+  return '';
+}
+
+function normalizeRoadNameChunk(value) {
+  return normalizeText(value)
+    .replace(/\b(VIE|VIALE|VIA|CORSO|CSO|LUNGOMARE|LARGO|PIAZZA|P\.ZZA|PZZA|STRADA|S\.S\.)\b/g, ' ')
+    .replace(/\b(CIV\.?\s*\d+|PASS\.?\s*PEDONALE|PASSAGGIO\s+PEDONALE)\b/g, ' ')
+    .replace(/[^A-Z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isLikelyTrafficLightRecord(tipoIncrocio, indirizzo) {
+  const tipo = normalizeText(tipoIncrocio);
+  const address = normalizeText(indirizzo);
+
+  if (tipo.includes('SOTTOPASSO')) {
+    return false;
+  }
+
+  if (tipo.includes('SEMAF') || tipo.includes('TELEC')) {
+    return true;
+  }
+
+  if (address.includes('SEMAFOR')) {
+    return true;
+  }
+
+  return false;
+}
+
+function estimateApproachCount(indirizzo, tipoIncrocio) {
+  const text = normalizeText(indirizzo);
+  const tipo = normalizeText(tipoIncrocio);
+
+  if (!text) {
+    return { count: 1, source: 'default' };
+  }
+
+  if (text.includes('PASS PEDONALE') || text.includes('PASSAGGIO PEDONALE')) {
+    return { count: 2, source: 'pedestrian' };
+  }
+
+  const chunks = text
+    .split(/\s+-\s+|\s*\/\s*|\s*,\s*/)
+    .map((item) => normalizeRoadNameChunk(item))
+    .filter(Boolean);
+
+  const uniqueRoads = [...new Set(chunks)];
+  const roads = uniqueRoads.length;
+
+  if (roads >= 4) {
+    return { count: 4, source: 'roads>=4' };
+  }
+
+  if (roads === 3) {
+    return { count: 3, source: 'roads=3' };
+  }
+
+  if (roads === 2) {
+    if (tipo.includes('TELEC')) {
+      return { count: 4, source: 'roads=2-telec' };
+    }
+    return { count: 4, source: 'roads=2' };
+  }
+
+  return { count: 1, source: 'roads<=1' };
+}
+
+function clampApproachCount(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(8, Math.round(n)));
+}
+
+function getTipoPriority(tipoIncrocio) {
+  const tipo = normalizeText(tipoIncrocio);
+  if (tipo.includes('IMP') && tipo.includes('SEMAF')) {
+    return 3;
+  }
+  if (tipo.includes('SEMAF')) {
+    return 2;
+  }
+  if (tipo.includes('TELEC')) {
+    return 1;
+  }
+  return 0;
+}
+
+async function loadSemaforiOverrides() {
+  if (semaforiOverridesCache) {
+    return semaforiOverridesCache;
+  }
+
+  try {
+    const raw = await readFile(semaforiOverridesFile, 'utf-8');
+    const parsed = JSON.parse(raw) || {};
+    const byId = parsed?.byId && typeof parsed.byId === 'object' ? parsed.byId : {};
+    const byCodice = parsed?.byCodice && typeof parsed.byCodice === 'object' ? parsed.byCodice : {};
+    const byAddress = parsed?.byAddress && typeof parsed.byAddress === 'object' ? parsed.byAddress : {};
+
+    semaforiOverridesCache = {
+      byId,
+      byCodice,
+      byAddress
+    };
+  } catch {
+    semaforiOverridesCache = {
+      byId: {},
+      byCodice: {},
+      byAddress: {}
+    };
+  }
+
+  return semaforiOverridesCache;
+}
+
+function getApproachCountOverride(overrides, id, codice, indirizzo) {
+  const byId = clampApproachCount(overrides.byId?.[id]);
+  if (overrides.byId?.[id] != null) {
+    return { count: byId, source: 'override-id' };
+  }
+
+  const codeKey = normalizeText(codice);
+  if (codeKey && overrides.byCodice?.[codeKey] != null) {
+    return { count: clampApproachCount(overrides.byCodice[codeKey]), source: 'override-codice' };
+  }
+
+  const addressKey = normalizeText(indirizzo);
+  if (addressKey && overrides.byAddress?.[addressKey] != null) {
+    return { count: clampApproachCount(overrides.byAddress[addressKey]), source: 'override-address' };
+  }
+
+  return null;
+}
+
+async function readSemaforiFileCache() {
+  try {
+    const raw = await readFile(semaforiCacheFile, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return {
+      geocodeByAddress: parsed?.geocodeByAddress && typeof parsed.geocodeByAddress === 'object' ? parsed.geocodeByAddress : {}
+    };
+  } catch {
+    return { geocodeByAddress: {} };
+  }
+}
+
+async function writeSemaforiFileCache(geocodeByAddress) {
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    geocodeByAddress
+  };
+  try {
+    await writeFile(semaforiCacheFile, JSON.stringify(payload, null, 2), 'utf-8');
+  } catch {
+  }
+}
+
+async function geocodeWithNominatim(indirizzo) {
+  const params = new URLSearchParams({
+    q: `${indirizzo}, Bari, Italia`,
+    format: 'json',
+    limit: '1'
+  });
+
+  const response = await fetch(`${NOMINATIM_URL}?${params.toString()}`, {
+    headers: {
+      'User-Agent': 'MUVT-AMTAB-Bari/1.0 (local-dev)'
+    }
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const result = await response.json();
+  const first = Array.isArray(result) ? result[0] : null;
+  if (!first) {
+    return null;
+  }
+
+  const lat = toNumber(first.lat);
+  const lon = toNumber(first.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) {
+    return null;
+  }
+
+  return { lat, lon };
+}
+
+async function loadSemaforiData() {
+  const now = Date.now();
+  if (semaforiCache.data && semaforiCache.expiresAt > now) {
+    return { data: semaforiCache.data, source: semaforiCache.source };
+  }
+
+  let payload = null;
+  let source = 'ckan';
+
+  try {
+    const upstream = await fetch(SEMAFORI_CKAN_URL, {
+      headers: {
+        Accept: 'application/json,*/*'
+      }
+    });
+
+    if (!upstream.ok) {
+      throw new Error(`CKAN semafori non disponibile (${upstream.status})`);
+    }
+
+    payload = await upstream.json();
+  } catch {
+    const fallbackRaw = await readFile(semaforiCkanFallbackFile, 'utf-8');
+    payload = JSON.parse(fallbackRaw);
+    source = 'local-fallback';
+  }
+
+  const records = Array.isArray(payload?.result?.records) ? payload.result.records : [];
+  if (!records.length && semaforiCache.data?.length) {
+    return { data: semaforiCache.data, source: `${semaforiCache.source}-stale` };
+  }
+
+  if (!records.length) {
+    throw new Error('Dataset semafori vuoto');
+  }
+
+  const { geocodeByAddress } = await readSemaforiFileCache();
+  const overrides = await loadSemaforiOverrides();
+
+  const normalized = [];
+  let needsPersist = false;
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] || {};
+    const idRaw = getField(record, ['id', 'Codice', '_id']) || String(index + 1);
+    const idDigits = String(idRaw).replace(/\D/g, '');
+    const id = idDigits ? `S${idDigits.padStart(3, '0')}` : `S${String(index + 1).padStart(3, '0')}`;
+
+    const indirizzo = String(getField(record, ['name', 'INDIRIZZO', 'description']) || `Semaforo ${id}`).trim();
+    const codice = String(getField(record, ['Codice', 'codice']) || '').trim();
+    const municipio = String(getField(record, ['MUNICIPIO', 'municipio', 'folders']) || '').trim();
+    const tipoIncrocio = String(getField(record, ['TIPO', 'tipo', 'tipologia']) || 'standard').trim() || 'standard';
+
+    if (!isLikelyTrafficLightRecord(tipoIncrocio, indirizzo)) {
+      continue;
+    }
+
+    let lat = toNumber(getField(record, ['LATITUDINE', 'lat', 'LAT', 'latitude']));
+    let lon = toNumber(getField(record, ['LONGITUDINE', 'lon', 'LON', 'longitude']));
+
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      const addressKey = normalizeText(indirizzo);
+      const cached = geocodeByAddress[addressKey];
+
+      if (cached && !Number.isNaN(toNumber(cached.lat)) && !Number.isNaN(toNumber(cached.lon))) {
+        lat = toNumber(cached.lat);
+        lon = toNumber(cached.lon);
+      } else {
+        const geocoded = await geocodeWithNominatim(indirizzo);
+        if (geocoded) {
+          lat = geocoded.lat;
+          lon = geocoded.lon;
+          geocodeByAddress[addressKey] = geocoded;
+          needsPersist = true;
+        }
+        await sleep(NOMINATIM_DELAY_MS);
+      }
+    }
+
+    if (Number.isNaN(lat) || Number.isNaN(lon)) {
+      continue;
+    }
+
+    const ondaStreet = detectOndaVerdeStreet(indirizzo);
+    const override = getApproachCountOverride(overrides, id, codice, indirizzo);
+    const estimated = estimateApproachCount(indirizzo, tipoIncrocio);
+    const approachCount = clampApproachCount(override ? override.count : estimated.count);
+    const approachCountSource = override ? override.source : estimated.source;
+
+    normalized.push({
+      id,
+      codice,
+      indirizzo,
+      municipio,
+      lat,
+      lon,
+      isOndaVerde: Boolean(ondaStreet),
+      tipoIncrocio,
+      ondaVerdeStreet: ondaStreet,
+      ondaVerdeOrder: 0,
+      approachCount,
+      approachCountSource
+    });
+  }
+
+  const dedupMap = new Map();
+  for (const item of normalized) {
+    const dedupKey = `${normalizeText(item.indirizzo)}__${item.lat.toFixed(5)}__${item.lon.toFixed(5)}`;
+    const existing = dedupMap.get(dedupKey);
+
+    if (!existing) {
+      dedupMap.set(dedupKey, item);
+      continue;
+    }
+
+    const existingPriority = getTipoPriority(existing.tipoIncrocio);
+    const currentPriority = getTipoPriority(item.tipoIncrocio);
+
+    if (currentPriority > existingPriority) {
+      dedupMap.set(dedupKey, item);
+      continue;
+    }
+
+    if (existing.approachCount < item.approachCount) {
+      existing.approachCount = item.approachCount;
+      existing.approachCountSource = item.approachCountSource;
+    }
+  }
+
+  const deduped = [...dedupMap.values()];
+
+  const groups = new Map();
+  for (const item of deduped) {
+    if (!item.isOndaVerde || !item.ondaVerdeStreet) {
+      continue;
+    }
+
+    const list = groups.get(item.ondaVerdeStreet) || [];
+    list.push(item);
+    groups.set(item.ondaVerdeStreet, list);
+  }
+
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.lon - b.lon || a.lat - b.lat);
+    list.forEach((item, idx) => {
+      item.ondaVerdeOrder = idx;
+    });
+  }
+
+  const cleaned = deduped.map((item) => ({
+    id: item.id,
+    codice: item.codice,
+    indirizzo: item.indirizzo,
+    municipio: item.municipio,
+    lat: item.lat,
+    lon: item.lon,
+    isOndaVerde: item.isOndaVerde,
+    tipoIncrocio: item.tipoIncrocio,
+    ondaVerdeOrder: item.ondaVerdeOrder,
+    approachCount: item.approachCount,
+    approachCountSource: item.approachCountSource
+  }));
+
+  if (needsPersist) {
+    await writeSemaforiFileCache(geocodeByAddress);
+  }
+
+  semaforiCache.data = cleaned;
+  semaforiCache.expiresAt = now + SEMAFORI_CACHE_MS;
+  semaforiCache.source = source;
+
+  return { data: cleaned, source };
 }
 
 function parseCsvLine(line) {
@@ -465,6 +904,56 @@ const server = createServer(async (req, res) => {
 
       const xml = await upstream.text();
       send(res, 200, xml, 'application/xml; charset=utf-8');
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/semafori') {
+      try {
+        const result = await loadSemaforiData();
+        const withState = requestUrl.searchParams.get('withState') === '1';
+        const data = withState
+          ? result.data.map((item) => {
+              const current = calculateTrafficLightState(item, Date.now());
+              return {
+                ...item,
+                stato: current.stato,
+                rimanentiMs: current.rimanentiMs
+              };
+            })
+          : result.data;
+        send(
+          res,
+          200,
+          JSON.stringify(data),
+          'application/json; charset=utf-8',
+          {
+            'X-Data-Source': result.source
+          }
+        );
+      } catch {
+        if (semaforiCache.data?.length) {
+          send(
+            res,
+            200,
+            JSON.stringify(semaforiCache.data),
+            'application/json; charset=utf-8',
+            {
+              'X-Data-Source': `${semaforiCache.source}-stale`
+            }
+          );
+          return;
+        }
+
+        send(
+          res,
+          200,
+          JSON.stringify([]),
+          'application/json; charset=utf-8',
+          {
+            'X-Data-Source': 'unavailable'
+          }
+        );
+      }
       return;
     }
 
@@ -926,11 +1415,12 @@ const server = createServer(async (req, res) => {
 
       const deduped = [];
       const seen = new Set();
+      const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
       for (const option of candidates) {
-        const roundedDepartureBucket = Math.round((option.boardEtaSeconds || 0) / 60);
-        const roundedTransferBucket = Math.round((option.transferBoardEtaSeconds || 0) / 60);
-        const roundedArrivalBucket = Math.round((option.destinationEtaSeconds || 0) / 60);
-        const roundedTotalBucket = Math.round((option.totalSeconds || 0) / 60);
+        const roundedDepartureBucket = Math.floor((option.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+        const roundedTransferBucket = Math.floor((option.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+        const roundedArrivalBucket = Math.floor((option.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+        const roundedTotalBucket = Math.floor((option.totalSeconds || 0) / DEDUP_BUCKET_SECONDS);
         const key = [
           option.routeId,
           option.transferRouteId || '',

@@ -1,4 +1,10 @@
 import { requestStaticPlan } from './planner.js';
+import {
+  calculateTrafficLightState,
+  calculateTrafficLightArmState,
+  trafficLightStateBadgeClass,
+  trafficLightStateEmoji
+} from './traffic-lights.js';
 
 function apiUrl(pathAndQuery) {
   const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
@@ -34,6 +40,8 @@ const message = document.querySelector('#message');
 const refreshBtn = document.querySelector('#refreshBtn');
 const autoRefreshCheckbox = document.querySelector('#autoRefresh');
 const mapAllToggle = document.querySelector('#mapAllToggle');
+const toggleSemafori = document.querySelector('#toggleSemafori');
+const semaforiZoomHint = document.querySelector('#semaforiZoomHint');
 const lineSelect = document.querySelector('#lineSelect');
 const mapTitle = document.querySelector('#mapTitle');
 const vehiclesCount = document.querySelector('#vehiclesCount');
@@ -50,6 +58,13 @@ const routeNowBtn = document.querySelector('#routeNowBtn');
 const allowTransfers = document.querySelector('#allowTransfers');
 const routeAutoRefresh = document.querySelector('#routeAutoRefresh');
 const mapDestinationText = document.querySelector('#mapDestinationText');
+
+const feedBanner = document.querySelector('#feedBanner');
+const feedBannerText = document.querySelector('#feedBannerText');
+const feedBannerDismiss = document.querySelector('#feedBannerDismiss');
+
+let feedConsecutiveFailures = 0;
+let feedBannerDismissedAt = 0;
 const routeSummaryText = document.querySelector('#routeSummaryText');
 const routeSteps = document.querySelector('#routeSteps');
 const routeOptionsList = document.querySelector('#routeOptionsList');
@@ -65,6 +80,8 @@ const MAX_WALK_METERS_FALLBACK = 2800;
 const BOARDING_BUFFER_SECONDS = 45;
 const MAX_FUTURE_LOOKAHEAD_SECONDS = 90 * 60;
 const DESTINATION_ALTERNATIVE_RADIUS_METERS = 900;
+const SEMAFORI_REFRESH_MS = 1000;
+const SEMAFORI_MIN_ZOOM = 14;
 let timer = null;
 let map = null;
 const markerByTripId = new Map();
@@ -92,6 +109,11 @@ let currentRouteOptions = [];
 let selectedRouteOptionKey = '';
 let stopsEndpointCache = '';
 let stopsApiDisabled = false;
+let semaforiLayer = null;
+let semaforiLoaded = false;
+let semaforiData = [];
+let semaforiTimer = null;
+const semaforiMarkersById = new Map();
 const tripDetailsCache = new Map();
 const routeDebugLines = [];
 
@@ -178,6 +200,37 @@ function formatCoordinate(lat, lon) {
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
 
+function showFeedBanner(text, level) {
+  if (!feedBanner) return;
+  const now = Date.now();
+  if (level !== 'error' && feedBannerDismissedAt && now - feedBannerDismissedAt < 60_000) return;
+  feedBanner.className = `feed-banner feed-banner--${level}`;
+  feedBannerText.textContent = text;
+  feedBanner.hidden = false;
+}
+
+function hideFeedBanner() {
+  if (!feedBanner) return;
+  feedBanner.hidden = true;
+}
+
+if (feedBannerDismiss) {
+  feedBannerDismiss.addEventListener('click', () => {
+    hideFeedBanner();
+    feedBannerDismissedAt = Date.now();
+  });
+}
+
+function formatPositionAge(positionTimestamp) {
+  if (!positionTimestamp) return '';
+  const ageSeconds = Math.floor(Date.now() / 1000 - positionTimestamp);
+  if (ageSeconds < 0 || Number.isNaN(ageSeconds)) return '';
+  if (ageSeconds < 30) return '';
+  if (ageSeconds < 60) return `${ageSeconds}s fa`;
+  if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)} min fa`;
+  return `${Math.floor(ageSeconds / 3600)}h fa`;
+}
+
 function formatStopName(stopId) {
   if (!stopId) {
     return 'n/d';
@@ -248,6 +301,15 @@ function initMap() {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
 
+  if (!map.getPane('semaforiPane')) {
+    const pane = map.createPane('semaforiPane');
+    pane.style.zIndex = '620';
+  }
+
+  map.on('zoomend', () => {
+    applySemaforiVisibility();
+  });
+
   map.on('click', (event) => {
     if (!mapPickMode) {
       return;
@@ -284,6 +346,325 @@ function initMap() {
       }
     }
   });
+
+  applySemaforiVisibility();
+}
+
+function semaforoStatusLabel(stato) {
+  switch (stato) {
+    case 'verde':
+      return 'Verde';
+    case 'giallo':
+      return 'Giallo';
+    case 'rosso':
+      return 'Rosso';
+    case 'lampeggiante':
+      return 'Giallo lampeggiante';
+    case 'spento':
+      return 'Spento';
+    default:
+      return 'Spento';
+  }
+}
+
+function createSemaforoIcon(stato) {
+  const activeRed = stato === 'rosso';
+  const activeYellow = stato === 'giallo' || stato === 'lampeggiante';
+  const activeGreen = stato === 'verde';
+  const flashingClass = stato === 'lampeggiante' ? ' semaforo-lampeggiante' : '';
+
+  return L.divIcon({
+    className: `semaforo-icon${flashingClass}`,
+    html: `
+      <svg class="semaforo-svg" viewBox="0 0 16 32" aria-hidden="true">
+        <rect x="2" y="1" width="12" height="30" rx="3" fill="#1f2937" stroke="#111827" stroke-width="1"/>
+        <rect x="4" y="4.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
+        <rect x="4" y="13.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
+        <rect x="4" y="22.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
+        <circle class="semaforo-luce luce-rosso${activeRed ? ' attiva' : ''}" cx="8" cy="8" r="2.8" fill="#ef4444" style="color:#ef4444" />
+        <circle class="semaforo-luce luce-giallo${activeYellow ? ' attiva' : ''}" cx="8" cy="16" r="2.8" fill="#eab308" style="color:#eab308" />
+        <circle class="semaforo-luce luce-verde${activeGreen ? ' attiva' : ''}" cx="8" cy="24" r="2.8" fill="#22c55e" style="color:#22c55e" />
+      </svg>
+    `,
+    iconSize: [16, 32],
+    iconAnchor: [8, 16]
+  });
+}
+
+function renderSemaforoPopup(item, state) {
+  const badgeClass = trafficLightStateBadgeClass(state.stato);
+  const emoji = trafficLightStateEmoji(state.stato);
+  const seconds = Math.max(0, Math.round((state.rimanentiMs || 0) / 1000));
+
+  return [
+    `<b>Semaforo #${item.id}</b>`,
+    `📍 ${item.indirizzo || 'n/d'}`,
+    `🏛️ ${item.municipio || 'n/d'}`,
+    `Stato: <span class="semaforo-popup-badge ${badgeClass}">${emoji} ${semaforoStatusLabel(state.stato)}</span>`,
+    `Cambio tra: ${seconds}s`,
+    item.isOndaVerde ? '🌊 Onda Verde attiva' : ''
+  ]
+    .filter(Boolean)
+    .join('<br>');
+}
+
+function clampSemaforiApproachCount(value) {
+  const n = Number(value);
+  if (Number.isNaN(n)) {
+    return 1;
+  }
+  return Math.max(1, Math.min(8, Math.round(n)));
+}
+
+function offsetLatLonMeters(lat, lon, distanceMeters, bearingDeg) {
+  const earth = 6378137;
+  const bearing = (bearingDeg * Math.PI) / 180;
+  const dLat = (distanceMeters * Math.cos(bearing)) / earth;
+  const dLon = (distanceMeters * Math.sin(bearing)) / (earth * Math.cos((lat * Math.PI) / 180));
+
+  return {
+    lat: lat + (dLat * 180) / Math.PI,
+    lon: lon + (dLon * 180) / Math.PI
+  };
+}
+
+function buildSemaforiArmBearings(count) {
+  if (count <= 1) {
+    return [0];
+  }
+
+  if (count === 2) {
+    return [90, 270];
+  }
+
+  if (count === 3) {
+    return [30, 150, 270];
+  }
+
+  if (count === 4) {
+    return [45, 135, 225, 315];
+  }
+
+  const values = [];
+  const step = 360 / count;
+  for (let i = 0; i < count; i += 1) {
+    values.push((i * step) % 360);
+  }
+  return values;
+}
+
+function getSemaforoArmPoints(item) {
+  const count = clampSemaforiApproachCount(item.approachCount);
+  if (count <= 1) {
+    return [{ lat: item.lat, lon: item.lon, armIndex: 1, armTotal: 1 }];
+  }
+
+  const radiusMeters = count <= 4 ? 7.5 : 9;
+  const bearings = buildSemaforiArmBearings(count);
+  return bearings.map((bearing, idx) => {
+    const point = offsetLatLonMeters(item.lat, item.lon, radiusMeters, bearing);
+    return {
+      lat: point.lat,
+      lon: point.lon,
+      armIndex: idx + 1,
+      armTotal: count
+    };
+  });
+}
+
+function renderSemaforoPopupWithArm(item, state, armIndex, armTotal) {
+  const suffix = armTotal > 1 ? `<br>🚦 Braccio ${armIndex}/${armTotal}` : '';
+  const source = item.approachCountSource ? `<br>Conteggio: ${item.approachCountSource}` : '';
+  return `${renderSemaforoPopup(item, state)}${suffix}${source}`;
+}
+
+function semaforiShouldBeVisible() {
+  return Boolean(toggleSemafori?.checked) && Boolean(map) && map.getZoom() >= SEMAFORI_MIN_ZOOM;
+}
+
+function updateSemaforiZoomHint() {
+  if (!semaforiZoomHint) {
+    return;
+  }
+
+  if (!toggleSemafori?.checked) {
+    semaforiZoomHint.textContent = '';
+    return;
+  }
+
+  if (!map || map.getZoom() < SEMAFORI_MIN_ZOOM) {
+    semaforiZoomHint.textContent = 'Zoom in per vedere i semafori.';
+    return;
+  }
+
+  semaforiZoomHint.textContent = '';
+}
+
+function stopSemaforiTicker() {
+  if (semaforiTimer) {
+    clearInterval(semaforiTimer);
+    semaforiTimer = null;
+  }
+}
+
+function startSemaforiTicker() {
+  if (semaforiTimer) {
+    return;
+  }
+
+  semaforiTimer = setInterval(() => {
+    updateSemaforiStates();
+  }, SEMAFORI_REFRESH_MS);
+}
+
+async function loadSemafori() {
+  const candidates = buildApiCandidates('api/semafori');
+  let lastError = null;
+
+  for (const endpoint of candidates) {
+    try {
+      const response = await fetch(endpoint, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Semafori HTTP ${response.status}`);
+      }
+
+      const source = (response.headers.get('x-data-source') || '').toLowerCase();
+      const payload = await readJsonResponse(response, 'Semafori API');
+      const data = Array.isArray(payload) ? payload : [];
+
+      if (source === 'unavailable') {
+        message.textContent = 'Dati semafori non disponibili.';
+      }
+
+      return data;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Semafori non disponibili');
+}
+
+function renderSemaforiMarkers() {
+  if (!map || typeof L === 'undefined') {
+    return;
+  }
+
+  if (!semaforiLayer) {
+    semaforiLayer = L.layerGroup();
+  }
+
+  semaforiLayer.clearLayers();
+  semaforiMarkersById.clear();
+
+  for (const item of semaforiData) {
+    const now = Date.now();
+    const armPoints = getSemaforoArmPoints(item);
+
+    armPoints.forEach((armPoint) => {
+      const state = calculateTrafficLightArmState(item, armPoint.armIndex, armPoint.armTotal, now);
+      const marker = L.marker([armPoint.lat, armPoint.lon], {
+        icon: createSemaforoIcon(state.stato),
+        pane: 'semaforiPane'
+      });
+
+      marker.bindPopup(renderSemaforoPopupWithArm(item, state, armPoint.armIndex, armPoint.armTotal));
+      semaforiLayer.addLayer(marker);
+
+      const markerKey = `${item.id}__${item.lat.toFixed(5)}__${item.lon.toFixed(5)}__${armPoint.armIndex}`;
+      semaforiMarkersById.set(markerKey, {
+        marker,
+        item,
+        stato: state.stato,
+        armIndex: armPoint.armIndex,
+        armTotal: armPoint.armTotal
+      });
+    });
+  }
+}
+
+function updateSemaforiStates() {
+  if (!semaforiMarkersById.size) {
+    return;
+  }
+
+  const now = Date.now();
+
+  for (const data of semaforiMarkersById.values()) {
+    const next = calculateTrafficLightArmState(data.item, data.armIndex, data.armTotal, now);
+
+    if (next.stato !== data.stato) {
+      data.marker.setIcon(createSemaforoIcon(next.stato));
+      data.stato = next.stato;
+    }
+
+    const element = data.marker.getElement();
+    if (element) {
+      element.classList.toggle('semaforo-lampeggiante', next.stato === 'lampeggiante');
+    }
+
+    if (data.marker.isPopupOpen()) {
+      data.marker.setPopupContent(renderSemaforoPopupWithArm(data.item, next, data.armIndex, data.armTotal));
+    }
+  }
+}
+
+async function enableSemaforiLayer() {
+  initMap();
+
+  if (!semaforiLoaded) {
+    try {
+      semaforiData = await loadSemafori();
+      semaforiLoaded = true;
+      renderSemaforiMarkers();
+    } catch {
+      semaforiData = [];
+      semaforiLoaded = true;
+      message.textContent = 'Dati semafori non disponibili.';
+    }
+  }
+
+  updateSemaforiStates();
+
+  if (semaforiShouldBeVisible() && semaforiLayer) {
+    semaforiLayer.addTo(map);
+  } else if (semaforiLayer && map.hasLayer(semaforiLayer)) {
+    map.removeLayer(semaforiLayer);
+  }
+
+  startSemaforiTicker();
+  updateSemaforiZoomHint();
+}
+
+function disableSemaforiLayer() {
+  stopSemaforiTicker();
+  if (map && semaforiLayer && map.hasLayer(semaforiLayer)) {
+    map.removeLayer(semaforiLayer);
+  }
+  updateSemaforiZoomHint();
+}
+
+function applySemaforiVisibility() {
+  updateSemaforiZoomHint();
+  if (!toggleSemafori?.checked) {
+    disableSemaforiLayer();
+    return;
+  }
+
+  if (!map) {
+    return;
+  }
+
+  if (!semaforiShouldBeVisible()) {
+    if (semaforiLayer && map.hasLayer(semaforiLayer)) {
+      map.removeLayer(semaforiLayer);
+    }
+    return;
+  }
+
+  if (semaforiLayer) {
+    semaforiLayer.addTo(map);
+  }
 }
 
 function findNearestStopToPoint(point) {
@@ -357,13 +738,24 @@ function syncDestinationFromMapPoint() {
 }
 
 function buildPopup(item) {
-  return [
+  const lines = [
     `<strong>Linea:</strong> ${item.routeId || 'n/d'}`,
     `<strong>Veicolo:</strong> ${item.vehicleId || 'n/d'}`,
     `<strong>Trip:</strong> ${item.tripId || 'n/d'}`,
     `<strong>Velocità:</strong> ${formatSpeed(item.speed)}`,
     `<strong>Ritardo:</strong> ${formatDelay(item.delay)}`
-  ].join('<br/>');
+  ];
+
+  const age = formatPositionAge(item.positionTimestamp);
+  if (age) {
+    lines.push(`<span class="popup-stale">📡 Posizione aggiornata ${age}</span>`);
+  }
+
+  if (item.confirmedRouteId && item.routeId !== item.confirmedRouteId) {
+    lines.push(`<span class="popup-stale">⚠️ Linea confermata: ${item.confirmedRouteId}</span>`);
+  }
+
+  return lines.join('<br/>');
 }
 
 function formatDistanceMeters(meters) {
@@ -608,6 +1000,7 @@ function renderRouteOptionCards(options, best) {
 
   const top = options.slice(0, 24);
 
+  const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
   const uiUnique = [];
   const uiSeen = new Set();
   for (const item of top) {
@@ -616,10 +1009,10 @@ function renderRouteOptionCards(options, best) {
       item.transferRouteId || '',
       item.boardStopId,
       item.destinationStopId,
-      Math.round((item.boardEtaSeconds || 0) / 60),
-      Math.round((item.transferBoardEtaSeconds || 0) / 60),
-      Math.round((item.destinationEtaSeconds || 0) / 60),
-      Math.round((item.totalSeconds || 0) / 60)
+      Math.floor((item.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
+      Math.floor((item.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
+      Math.floor((item.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
+      Math.floor((item.totalSeconds || 0) / DEDUP_BUCKET_SECONDS)
     ].join('__');
     if (uiSeen.has(uiKey)) {
       continue;
@@ -800,24 +1193,14 @@ function extractPathFromShape(shapePoints, startLocation, endLocation) {
     return [];
   }
 
-  let endIndex = findNearestPointIndex(shapePoints, endLocation, startIndex + 1, shapePoints.length - 1);
-  if (endIndex < 0) {
-    endIndex = findNearestPointIndex(shapePoints, endLocation, 0, startIndex - 1);
-  }
-
-  if (startIndex < 0 || endIndex < 0 || startIndex === endIndex) {
+  const endIndex = findNearestPointIndex(shapePoints, endLocation, startIndex + 1, shapePoints.length - 1);
+  if (endIndex < 0 || endIndex <= startIndex) {
     return [];
   }
 
-  const from = Math.min(startIndex, endIndex);
-  const to = Math.max(startIndex, endIndex);
-  const segment = shapePoints.slice(from, to + 1);
+  const segment = shapePoints.slice(startIndex, endIndex + 1);
   if (segment.length < 2) {
     return [];
-  }
-
-  if (startIndex > endIndex) {
-    segment.reverse();
   }
 
   const startPoint = [startLocation.lat, startLocation.lon];
@@ -1045,274 +1428,7 @@ async function renderBusRouteOnMap(best) {
   map.fitBounds(bounds, { padding: [40, 40] });
 }
 
-async function pickBestBusForDestination(stopId, origin, onDebug = null) {
-  const destinationLocation = stopLocationById.get(stopId);
-  if (!destinationLocation || !origin) {
-    onDebug?.('Origine o destinazione non valida.');
-    return null;
-  }
-
-  const log = (line) => {
-    onDebug?.(line);
-  };
-
-  const destinationStopIds = new Set(
-    [...stopLocationById.entries()]
-      .filter(([candidateStopId, location]) => {
-        if (candidateStopId === stopId) {
-          return true;
-        }
-
-        const distance = haversineMeters(destinationLocation.lat, destinationLocation.lon, location.lat, location.lon);
-        return distance <= DESTINATION_ALTERNATIVE_RADIUS_METERS;
-      })
-      .map(([candidateStopId]) => candidateStopId)
-  );
-
-  const candidateEntities = lastMergedEntities
-    .filter((item) => item.tripId && item.routeId)
-    .filter((item, index, all) => all.findIndex((x) => x.routeId === item.routeId && x.tripId === item.tripId) === index)
-    .sort((a, b) => {
-      const da = a.lat != null && a.lon != null ? haversineMeters(origin.lat, origin.lon, a.lat, a.lon) : Number.MAX_SAFE_INTEGER;
-      const db = b.lat != null && b.lon != null ? haversineMeters(origin.lat, origin.lon, b.lat, b.lon) : Number.MAX_SAFE_INTEGER;
-      if (da !== db) {
-        return da - db;
-      }
-
-      const ta = Number.isNaN(a.arrivalTime) ? Number.MAX_SAFE_INTEGER : a.arrivalTime;
-      const tb = Number.isNaN(b.arrivalTime) ? Number.MAX_SAFE_INTEGER : b.arrivalTime;
-      return ta - tb;
-    })
-    .slice(0, 160);
-
-  const evaluateWithMaxWalk = async (maxWalkMeters) => {
-    const nearbyStops = [...stopLocationById.entries()]
-      .map(([candidateStopId, location]) => ({
-        stopId: candidateStopId,
-        location,
-        walkDistanceMeters: haversineMeters(origin.lat, origin.lon, location.lat, location.lon)
-      }))
-      .filter((item) => (maxWalkMeters == null ? true : item.walkDistanceMeters <= maxWalkMeters))
-      .sort((a, b) => a.walkDistanceMeters - b.walkDistanceMeters);
-
-    if (!nearbyStops.length) {
-      return {
-        nearbyStops,
-        options: [],
-        stats: { okCount: 0, skipNoDetails: 0, skipNoTimeline: 0, skipNoDestination: 0, skipDirection: 0, skipNoNearbyBoard: 0, skipNoBoard: 0, skipError: 0 }
-      };
-    }
-
-    const nearbyStopsById = new Map(nearbyStops.map((item) => [item.stopId, item]));
-    const options = [];
-    let okCount = 0;
-    let skipNoDetails = 0;
-    let skipNoTimeline = 0;
-    let skipNoDestination = 0;
-    let skipDirection = 0;
-    let skipNoNearbyBoard = 0;
-    let skipNoBoard = 0;
-    let skipError = 0;
-
-    for (const candidate of candidateEntities) {
-      try {
-        const params = new URLSearchParams({
-          routeId: candidate.routeId,
-          tripId: candidate.tripId,
-          currentStopId: candidate.stopId || '',
-          delay: String(Number.isNaN(candidate.delay) ? 0 : candidate.delay)
-        });
-
-        const response = await fetch(apiUrl(`api/tripdetails?${params.toString()}`), { cache: 'no-store' });
-        if (!response.ok) {
-          skipNoDetails += 1;
-          continue;
-        }
-
-        const details = await response.json();
-        const timeline = details.stopTimeline || [];
-        if (!timeline.length) {
-          skipNoTimeline += 1;
-          continue;
-        }
-
-        const rawCurrentIndex = Number.isInteger(details.currentStopIndex) ? details.currentStopIndex : -1;
-        const hasCurrentStop = Boolean(details.currentStopId);
-        const currentIndex = rawCurrentIndex >= 0 ? rawCurrentIndex : 0;
-
-        const destinationIndexes = timeline
-          .map((row, rowIndex) => ({ row, rowIndex }))
-          .filter(({ row, rowIndex }) => rowIndex >= currentIndex && destinationStopIds.has(row.stopId))
-          .map(({ rowIndex }) => rowIndex);
-
-        if (!destinationIndexes.length) {
-          skipNoDestination += 1;
-          continue;
-        }
-
-        if (hasCurrentStop && rawCurrentIndex >= 0 && destinationIndexes.every((index) => index <= rawCurrentIndex)) {
-          skipDirection += 1;
-          continue;
-        }
-
-        const nearbyBoardCandidates = timeline
-          .map((row, rowIndex) => ({ row, rowIndex }))
-          .filter(({ row, rowIndex }) => rowIndex >= currentIndex && nearbyStopsById.has(row.stopId));
-
-        if (!nearbyBoardCandidates.length) {
-          skipNoNearbyBoard += 1;
-          continue;
-        }
-
-        let bestBoard = null;
-
-        for (const { row: stop, rowIndex: boardIndex } of nearbyBoardCandidates) {
-          const nearby = nearbyStopsById.get(stop.stopId);
-          if (!nearby) {
-            continue;
-          }
-
-          const boardLocation = nearby.location;
-          const walkDistanceMeters = nearby.walkDistanceMeters;
-          const walkSeconds = walkDistanceMeters / WALK_SPEED_MPS;
-          const destinationIndex = destinationIndexes.find((index) => index > boardIndex);
-          if (destinationIndex == null) {
-            continue;
-          }
-
-          const destinationEntry = timeline[destinationIndex];
-          const destinationStopId = destinationEntry?.stopId || stopId;
-          const destinationStopLocation = stopLocationById.get(destinationStopId) || destinationLocation;
-          let destinationEtaSeconds = toFutureDeltaSeconds(destinationEntry.predictedArrivalTime || destinationEntry.arrivalTime);
-          const stopsToTravel = Math.max(1, destinationIndex - boardIndex);
-
-          let boardEtaSeconds = toFutureDeltaSeconds(stop.predictedArrivalTime || stop.arrivalTime);
-          if (Number.isNaN(boardEtaSeconds)) {
-            if (candidate.lat != null && candidate.lon != null) {
-              const speedMps = Math.max(3, Number.isNaN(candidate.speed) ? 8 : candidate.speed || 8);
-              const busDistanceMetersEstimate = haversineMeters(candidate.lat, candidate.lon, boardLocation.lat, boardLocation.lon);
-              boardEtaSeconds = Math.round(busDistanceMetersEstimate / speedMps);
-            } else {
-              continue;
-            }
-          }
-
-          if (boardEtaSeconds + BOARDING_BUFFER_SECONDS < walkSeconds) {
-            continue;
-          }
-
-          if (Number.isNaN(destinationEtaSeconds)) {
-            destinationEtaSeconds = boardEtaSeconds + stopsToTravel * 120;
-          }
-
-          const waitSeconds = Math.max(0, boardEtaSeconds - walkSeconds);
-          const rideSeconds = Math.max(0, destinationEtaSeconds - boardEtaSeconds);
-          const totalSeconds = walkSeconds + waitSeconds + rideSeconds;
-
-          const candidateBoard = {
-            routeId: candidate.routeId,
-            tripId: candidate.tripId,
-            vehicleId: candidate.vehicleId,
-            destinationStopId,
-            destinationStopName: formatStopName(destinationStopId),
-            destinationStopLocation,
-            boardStopId: stop.stopId,
-            boardStopName: formatStopName(stop.stopId),
-            boardStopLocation: boardLocation,
-            walkDistanceMeters,
-            walkSeconds,
-            waitSeconds,
-            rideSeconds,
-            totalSeconds,
-            busDistanceMeters: walkDistanceMeters,
-            boardEtaSeconds,
-            destinationEtaSeconds,
-            stopsToTravel
-          };
-
-          if (!bestBoard || candidateBoard.totalSeconds < bestBoard.totalSeconds || (Math.abs(candidateBoard.totalSeconds - bestBoard.totalSeconds) < 30 && candidateBoard.walkDistanceMeters < bestBoard.walkDistanceMeters)) {
-            bestBoard = candidateBoard;
-          }
-        }
-
-        if (!bestBoard) {
-          skipNoBoard += 1;
-          continue;
-        }
-
-        options.push(bestBoard);
-        okCount += 1;
-      } catch (error) {
-        skipError += 1;
-        log(`Errore candidato linea ${candidate.routeId} trip ${candidate.tripId || 'n/d'}: ${error.message}`);
-      }
-    }
-
-    return {
-      nearbyStops,
-      options,
-      stats: {
-        okCount,
-        skipNoDetails,
-        skipNoTimeline,
-        skipNoDestination,
-        skipDirection,
-        skipNoNearbyBoard,
-        skipNoBoard,
-        skipError
-      }
-    };
-  };
-
-  log(
-    `Analisi destinazione ${stopId} (${formatStopName(stopId)}), alternative entro ${DESTINATION_ALTERNATIVE_RADIUS_METERS}m: ${destinationStopIds.size}. Candidati attivi: ${candidateEntities.length}.`
-  );
-
-  const phases = [
-    { label: `raggio ${MAX_WALK_METERS}m`, maxWalkMeters: MAX_WALK_METERS },
-    { label: `raggio esteso ${MAX_WALK_METERS_FALLBACK}m`, maxWalkMeters: MAX_WALK_METERS_FALLBACK },
-    { label: 'nessun limite distanza', maxWalkMeters: null }
-  ];
-
-  let finalOptions = [];
-  let usedPhase = phases[phases.length - 1];
-
-  for (const phase of phases) {
-    const result = await evaluateWithMaxWalk(phase.maxWalkMeters);
-    log(
-      `Fase ${phase.label}: fermate=${result.nearbyStops.length}, validi=${result.stats.okCount}, noDetails=${result.stats.skipNoDetails}, noTimeline=${result.stats.skipNoTimeline}, noDestination=${result.stats.skipNoDestination}, direzione=${result.stats.skipDirection}, noNearbyBoard=${result.stats.skipNoNearbyBoard}, noBoard=${result.stats.skipNoBoard}, errori=${result.stats.skipError}.`
-    );
-
-    if (result.options.length) {
-      finalOptions = result.options;
-      usedPhase = phase;
-      break;
-    }
-  }
-
-  if (!finalOptions.length) {
-    log('Nessun bus utile selezionato con i criteri correnti.');
-    return null;
-  }
-
-  finalOptions.sort((a, b) => {
-    if (a.walkDistanceMeters !== b.walkDistanceMeters) {
-      return a.walkDistanceMeters - b.walkDistanceMeters;
-    }
-    return a.boardEtaSeconds - b.boardEtaSeconds;
-  });
-
-  const best = finalOptions[0];
-  log(
-    `Scelto (${usedPhase.label}): linea ${best.routeId} veicolo ${best.vehicleId || 'n/d'} · salita ${best.boardStopName} · walk ${formatDistanceMeters(best.walkDistanceMeters)} · partenza tra ${formatDurationSeconds(best.boardEtaSeconds)} · totale ${formatDurationSeconds(best.totalSeconds)}.`
-  );
-
-  return {
-    best,
-    options: finalOptions,
-    phaseLabel: usedPhase.label
-  };
-}
+// pickBestBusForDestination removed — was dead code, replaced by server-side planner (requestStaticPlan)
 
 async function calculateRouteToSelectedStop() {
   if (routingBusy) {
@@ -1360,16 +1476,18 @@ async function calculateRouteToSelectedStop() {
       `Planner statico: fermate vicine=${plan.nearbyOriginStopsCount}, alternative destinazione=${plan.destinationAlternativesCount}, opzioni=${plan.options?.length || 0}.`
     );
 
-    const options = (plan.options || []).map((item) => {
-      const live = lastMergedEntities.find((entity) => entity.routeId === item.routeId && entity.tripId === item.tripId);
-      return {
-        ...item,
-        vehicleId: live?.vehicleId || '',
-        boardStopLocation: stopLocationById.get(item.boardStopId),
-        transferStopLocation: item.transferStopId ? stopLocationById.get(item.transferStopId) : null,
-        destinationStopLocation: stopLocationById.get(item.destinationStopId)
-      };
-    });
+    const options = (plan.options || [])
+      .map((item) => {
+        const live = lastMergedEntities.find((entity) => entity.routeId === item.routeId && entity.tripId === item.tripId);
+        return {
+          ...item,
+          vehicleId: live?.vehicleId || '',
+          boardStopLocation: stopLocationById.get(item.boardStopId),
+          transferStopLocation: item.transferStopId ? stopLocationById.get(item.transferStopId) : null,
+          destinationStopLocation: stopLocationById.get(item.destinationStopId)
+        };
+      })
+      .filter((item) => item.boardStopLocation && item.destinationStopLocation);
 
     if (!options.length) {
       clearNavigationLayer();
@@ -1582,6 +1700,10 @@ function updateMap(entities) {
   const pointsForBounds = [];
 
   for (const item of entities) {
+    if (!isRouteIdReliable(item)) {
+      continue;
+    }
+
     const key = item.vehicleId || item.tripKey || item.tripId;
     if (key) {
       activeKeys.add(key);
@@ -1743,41 +1865,96 @@ function parseVehiclePositions(xmlText) {
   return byTripId;
 }
 
-function mergeTripAndPosition(trips, positionsByTripId) {
-  const merged = trips.map((trip) => {
-    const position = positionsByTripId.get(trip.tripKey) || positionsByTripId.get(makeTripKey(trip.routeId, '', trip.vehicleId));
-    return {
+function isRouteIdReliable(entity) {
+  return (
+    entity.routeId &&
+    typeof entity.routeId === 'string' &&
+    entity.routeId.trim().length > 0 &&
+    entity.routeId !== '0'
+  );
+}
+
+function mergeTripAndPosition(trips, positionsByKey) {
+  const positionsByTripIdOnly = new Map();
+
+  for (const [, position] of positionsByKey.entries()) {
+    if (position.tripId) {
+      const existing = positionsByTripIdOnly.get(position.tripId);
+      if (!existing || (position.timestamp || 0) > (existing.timestamp || 0)) {
+        positionsByTripIdOnly.set(position.tripId, position);
+      }
+    }
+  }
+
+  const merged = [];
+  const usedPositionKeys = new Set();
+  let mergeExact = 0;
+  let mergeTripOnly = 0;
+  let mergeNoPosition = 0;
+  let mergeRouteDisagree = 0;
+  let excludedNoRoute = 0;
+
+  for (const trip of trips) {
+    let position = positionsByKey.get(trip.tripKey);
+
+    if (!position && trip.tripId) {
+      const candidate = positionsByTripIdOnly.get(trip.tripId);
+      if (candidate) {
+        if (!candidate.routeId || candidate.routeId === trip.routeId) {
+          position = candidate;
+          mergeTripOnly += 1;
+        } else {
+          position = candidate;
+          mergeRouteDisagree += 1;
+        }
+      }
+    }
+
+    if (position) {
+      if (!positionsByKey.has(trip.tripKey)) {
+        /* tripId-only match already counted above */
+      } else {
+        mergeExact += 1;
+      }
+      usedPositionKeys.add(position.positionKey);
+    } else {
+      mergeNoPosition += 1;
+    }
+
+    // TripUpdates always provides a routeId — trust it as source of truth
+    const routeId = trip.routeId;
+    if (!routeId || routeId === '0') {
+      excludedNoRoute += 1;
+      continue;
+    }
+
+    merged.push({
       ...trip,
+      routeId,
+      confirmedRouteId: routeId,
       vehicleId: position?.vehicleId ?? '',
       stopId: trip.stopId || position?.stopId || '',
       lat: position?.lat,
       lon: position?.lon,
       speed: position?.speed,
-      currentStatus: position?.currentStatus ?? ''
-    };
-  });
-
-  for (const [positionKey, position] of positionsByTripId.entries()) {
-    const alreadyPresent = merged.some((item) => item.tripKey === positionKey || makeTripKey(item.routeId, '', item.vehicleId) === positionKey);
-    if (alreadyPresent) {
-      continue;
-    }
-
-    merged.push({
-      routeId: position.routeId,
-      tripKey: position.tripKey,
-      tripId: position.tripId,
-      stopId: position.stopId || '',
-      delay: NaN,
-      arrivalTime: position.timestamp,
-      status: delayToStatus(0),
-      vehicleId: position.vehicleId,
-      lat: position.lat,
-      lon: position.lon,
-      speed: position.speed,
-      currentStatus: position.currentStatus
+      currentStatus: position?.currentStatus ?? '',
+      positionTimestamp: position?.timestamp ?? null
     });
   }
+
+  // Orphan VehiclePositions (no matching TripUpdate) are NEVER rendered.
+  // They lack a reliable routeId and are the primary source of route swaps.
+  let orphanTotal = 0;
+  for (const [positionKey] of positionsByKey.entries()) {
+    if (!usedPositionKeys.has(positionKey)) {
+      orphanTotal += 1;
+    }
+  }
+
+  const accepted = merged.length;
+  console.log(
+    `[MERGE] ${accepted} veicoli con routeId certa, ${excludedNoRoute} esclusi (no routeId), ${orphanTotal} posizioni orfane scartate | exact=${mergeExact}, tripOnly=${mergeTripOnly}, routeDisagree=${mergeRouteDisagree}, noPosition=${mergeNoPosition}`
+  );
 
   return merged.sort((a, b) => a.arrivalTime - b.arrivalTime);
 }
@@ -1935,9 +2112,31 @@ async function loadData() {
     );
 
     const { entities: tripEntities, feedTs } = parseTripUpdates(tripUpdatesXml);
-    const positionsByTripId = parseVehiclePositions(vehiclePositionXml);
-    lastMergedEntities = mergeTripAndPosition(tripEntities, positionsByTripId);
+    const positionsByKey = parseVehiclePositions(vehiclePositionXml);
+    lastMergedEntities = mergeTripAndPosition(tripEntities, positionsByKey);
     lastFeedTimestamp = feedTs;
+
+    const routeIds = [...new Set(lastMergedEntities.map((item) => item.routeId).filter(Boolean))];
+    console.log(`[FEED] parsed ${tripEntities.length} tripUpdates, ${positionsByKey.size} vehiclePositions, merged ${lastMergedEntities.length} entities, routeIds: [${routeIds.sort(compareRouteIds).join(', ')}]`);
+
+    const suspiciousPairs = [['20', '30'], ['20', '120'], ['06', '60']];
+    for (const entity of lastMergedEntities) {
+      if (entity.confirmedRouteId && entity.routeId !== entity.confirmedRouteId) {
+        console.error(`[SWAP DETECTED] vehicleId=${entity.vehicleId} displayed=${entity.routeId} confirmed=${entity.confirmedRouteId}`);
+      }
+
+      for (const [a, b] of suspiciousPairs) {
+        if (entity.routeId === a) {
+          const sameVehicleOther = lastMergedEntities.find(
+            (other) => other !== entity && other.vehicleId === entity.vehicleId && other.routeId === b
+          );
+
+          if (sameVehicleOther) {
+            console.warn(`[SWAP RISK] vehicleId=${entity.vehicleId} appears as both route ${a} and ${b}`);
+          }
+        }
+      }
+    }
 
     const availableRouteIds = getAvailableRouteIds(lastMergedEntities);
     ensureSelectedRoute(availableRouteIds);
@@ -1968,8 +2167,32 @@ async function loadData() {
       }
     }
 
+    // Feed staleness check
+    if (feedTs) {
+      const feedAgeSeconds = Math.floor(Date.now() / 1000 - feedTs);
+      if (feedAgeSeconds > 120) {
+        const mins = Math.floor(feedAgeSeconds / 60);
+        showFeedBanner(`⚠️ Feed GTFS-RT non aggiornato da ${mins} minuti — i dati potrebbero non essere attendibili.`, 'warn');
+      } else if (feedConsecutiveFailures > 0) {
+        showFeedBanner('✅ Connessione al feed ripristinata.', 'ok');
+        setTimeout(hideFeedBanner, 5000);
+      } else {
+        hideFeedBanner();
+      }
+    } else {
+      hideFeedBanner();
+    }
+    feedConsecutiveFailures = 0;
+
     message.textContent = `Dati aggiornati alle ${new Date().toLocaleTimeString('it-IT')}`;
   } catch (error) {
+    feedConsecutiveFailures++;
+    const level = feedConsecutiveFailures >= 3 ? 'error' : 'warn';
+    const label = feedConsecutiveFailures >= 3
+      ? `🔴 Feed non disponibile (${feedConsecutiveFailures} tentativi falliti): ${error.message}`
+      : `⚠️ Errore temporaneo feed: ${error.message}`;
+    showFeedBanner(label, level);
+
     message.textContent = `Errore durante il recupero feed: ${error.message}`;
     tableBody.innerHTML = '<tr><td colspan="7" class="placeholder">Impossibile leggere il feed in questo momento</td></tr>';
     lineSelect.innerHTML = '<option value="">Errore feed</option>';
@@ -2009,6 +2232,15 @@ lineSelect.addEventListener('change', () => {
 mapAllToggle.addEventListener('change', () => {
   showAllOnMap = mapAllToggle.checked;
   renderSelectedRouteView();
+});
+
+toggleSemafori?.addEventListener('change', async () => {
+  if (toggleSemafori.checked) {
+    await enableSemaforiLayer();
+    return;
+  }
+
+  disableSemaforiLayer();
 });
 
 locateBtn.addEventListener('click', () => {
@@ -2084,6 +2316,7 @@ renderTripDetailsPlaceholder('Clicca su un bus nella mappa per vedere percorso c
 setRouteSummary('Posizione non rilevata. Usa GPS o scegli un punto dalla mappa.');
 syncDestinationFromMapPoint();
 renderRouteDebug();
+updateSemaforiZoomHint();
 
 loadData();
 startAutoRefresh();

@@ -377,11 +377,12 @@ export async function onRequestGet(context) {
 
     const deduped = [];
     const seen = new Set();
+    const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
     for (const option of candidates) {
-      const roundedDepartureBucket = Math.round((option.boardEtaSeconds || 0) / 60);
-      const roundedTransferBucket = Math.round((option.transferBoardEtaSeconds || 0) / 60);
-      const roundedArrivalBucket = Math.round((option.destinationEtaSeconds || 0) / 60);
-      const roundedTotalBucket = Math.round((option.totalSeconds || 0) / 60);
+      const roundedDepartureBucket = Math.floor((option.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+      const roundedTransferBucket = Math.floor((option.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+      const roundedArrivalBucket = Math.floor((option.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+      const roundedTotalBucket = Math.floor((option.totalSeconds || 0) / DEDUP_BUCKET_SECONDS);
       const key = [
         option.routeId,
         option.transferRouteId || '',
