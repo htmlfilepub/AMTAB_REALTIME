@@ -98,7 +98,7 @@ const NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
 const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 const NOMINATIM_RESULT_LIMIT = 5;
 const STARTUP_ALERT_SESSION_KEY = 'muvt_startup_alert_seen_session';
-const STARTUP_ALERT_DAY_KEY = 'muvt_startup_alert_seen_day';
+const STARTUP_ALERT_SEEN_KEY = 'muvt_startup_alert_seen';
 const TRAFFIC_LIGHTS_TOGGLE_KEY = 'muvt_traffic_lights_enabled';
 const SEARCH_MIN_QUERY_LENGTH = 3;
 const SEARCH_DEBOUNCE_MS = 350;
@@ -930,8 +930,7 @@ function formatGeocodeResultLabel(item) {
     return 'Indirizzo non disponibile';
   }
 
-  const parts = text.split(',').map((chunk) => chunk.trim()).filter(Boolean);
-  return parts.slice(0, 4).join(', ');
+  return text;
 }
 
 function hideSearchResults(target) {
@@ -997,10 +996,13 @@ async function fetchNominatimSuggestions(rawQuery, signal) {
 
   const params = new URLSearchParams({
     q: query,
-    format: 'jsonv2',
-    addressdetails: '0',
+    format: 'json',
+    addressdetails: '1',
     limit: String(NOMINATIM_RESULT_LIMIT),
-    dedupe: '1'
+    dedupe: '1',
+    viewbox: '16.76,41.15,16.95,41.05',
+    bounded: '0',
+    countrycodes: 'it'
   });
 
   const response = await fetch(`${NOMINATIM_SEARCH_URL}?${params.toString()}`, {
@@ -1552,18 +1554,9 @@ function resetActiveMapSelection() {
   renderNextJourneyTimes(null);
 }
 
-function getTodayStorageKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 function hasSeenStartupAlert() {
-  const today = getTodayStorageKey();
   let seenInSession = false;
-  let seenToday = false;
+  let seenPersisted = false;
 
   try {
     seenInSession = sessionStorage.getItem(STARTUP_ALERT_SESSION_KEY) === '1';
@@ -1572,22 +1565,21 @@ function hasSeenStartupAlert() {
   }
 
   try {
-    seenToday = localStorage.getItem(STARTUP_ALERT_DAY_KEY) === today;
+    seenPersisted = localStorage.getItem(STARTUP_ALERT_SEEN_KEY) === '1';
   } catch {
-    seenToday = false;
+    seenPersisted = false;
   }
 
-  return seenInSession || seenToday;
+  return seenInSession || seenPersisted;
 }
 
 function markStartupAlertSeen() {
-  const today = getTodayStorageKey();
   try {
     sessionStorage.setItem(STARTUP_ALERT_SESSION_KEY, '1');
   } catch {
   }
   try {
-    localStorage.setItem(STARTUP_ALERT_DAY_KEY, today);
+    localStorage.setItem(STARTUP_ALERT_SEEN_KEY, '1');
   } catch {
   }
 }

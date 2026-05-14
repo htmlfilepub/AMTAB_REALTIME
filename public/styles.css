@@ -386,7 +386,7 @@ html, body {
   top: 20px;
   left: 20px;
   z-index: var(--z-card);
-  width: 380px;
+  width: clamp(280px, calc(100vw - 180px), 380px);
   max-width: calc(100vw - 40px);
 
   background: var(--surface);
@@ -1159,7 +1159,7 @@ html, body {
    ═══════════════════════════════════════════════════════════ */
 @media (min-width: 641px) and (max-width: 1024px) {
   .search-card {
-    width: 360px;
+    width: clamp(280px, calc(100vw - 180px), 360px);
     top: 16px;
     left: 16px;
   }
