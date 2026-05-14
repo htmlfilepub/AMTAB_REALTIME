@@ -35,53 +35,84 @@ async function readJsonResponse(response, label) {
   throw new Error(`${label} non restituisce JSON valido (${preview || 'risposta vuota'})`);
 }
 
-const tableBody = document.querySelector('#tableBody');
+// ── DOM refs: removed elements get null-safe fallback ──
 const message = document.querySelector('#message');
-const refreshBtn = document.querySelector('#refreshBtn');
-const autoRefreshCheckbox = document.querySelector('#autoRefresh');
-const mapAllToggle = document.querySelector('#mapAllToggle');
-const toggleSemafori = document.querySelector('#toggleSemafori');
-const semaforiZoomHint = document.querySelector('#semaforiZoomHint');
 const lineSelect = document.querySelector('#lineSelect');
-const mapTitle = document.querySelector('#mapTitle');
-const vehiclesCount = document.querySelector('#vehiclesCount');
-const avgDelay = document.querySelector('#avgDelay');
-const feedTimestamp = document.querySelector('#feedTimestamp');
-const tripDetailsSummary = document.querySelector('#tripDetailsSummary');
-const upcomingStops = document.querySelector('#upcomingStops');
-const serviceCalendarText = document.querySelector('#serviceCalendarText');
-const locateBtn = document.querySelector('#locateBtn');
-const pickFromMapBtn = document.querySelector('#pickFromMapBtn');
-const pickDestinationFromMapBtn = document.querySelector('#pickDestinationFromMapBtn');
 const destinationStopSelect = document.querySelector('#destinationStopSelect');
+const locateBtn = document.querySelector('#locateBtn');
 const routeNowBtn = document.querySelector('#routeNowBtn');
 const allowTransfers = document.querySelector('#allowTransfers');
 const routeAutoRefresh = document.querySelector('#routeAutoRefresh');
 const mapDestinationText = document.querySelector('#mapDestinationText');
+const originSearchInput = document.querySelector('#originSearchInput');
+const destinationSearchInput = document.querySelector('#destinationSearchInput');
+const originSearchResults = document.querySelector('#originSearchResults');
+const destinationSearchResults = document.querySelector('#destinationSearchResults');
 
 const feedBanner = document.querySelector('#feedBanner');
 const feedBannerText = document.querySelector('#feedBannerText');
 const feedBannerDismiss = document.querySelector('#feedBannerDismiss');
 
+// New UI elements
+const searchCard = document.querySelector('#searchCard');
+const editRouteBtn = document.querySelector('#editRouteBtn');
+const swapBtn = document.querySelector('#swapBtn');
+const routeSummaryWrap = document.querySelector('#routeSummaryWrap');
+const sheetHandle = document.querySelector('#sheetHandle');
+const lineFilterSelect = document.querySelector('#lineFilterSelect');
+const basemapToggleBtn = document.querySelector('#basemapToggleBtn');
+const startupAlertModal = document.querySelector('#startupAlertModal');
+const startupAlertCloseBtn = document.querySelector('#startupAlertCloseBtn');
+
 let feedConsecutiveFailures = 0;
 let feedBannerDismissedAt = 0;
 const routeSummaryText = document.querySelector('#routeSummaryText');
-const routeSteps = document.querySelector('#routeSteps');
 const routeOptionsList = document.querySelector('#routeOptionsList');
-const routeDebugToggle = document.querySelector('#routeDebugToggle');
-const routeDebugOutput = document.querySelector('#routeDebugOutput');
+
+// Removed elements — null-safe stubs for code that still references them
+const tableBody = null;
+const toggleSemafori = null;
+const semaforiZoomHint = null;
+const routeDebugToggle = null;
+const routeDebugOutput = null;
+const routeSteps = null;
+const mapTitle = null;
+const vehiclesCount = null;
+const avgDelay = null;
+const feedTimestamp = null;
+const tripDetailsSummary = null;
+const upcomingStops = null;
+const serviceCalendarText = null;
 
 const REFRESH_MS = 15000;
 const MAP_DEFAULT_CENTER = [41.1171, 16.8719];
 const MAP_DEFAULT_ZOOM = 13;
 const WALK_SPEED_MPS = 1.35;
 const MAX_WALK_METERS = 500;
-const MAX_WALK_METERS_FALLBACK = 2800;
+const MAX_WALK_METERS_FALLBACK = 500;
 const BOARDING_BUFFER_SECONDS = 45;
 const MAX_FUTURE_LOOKAHEAD_SECONDS = 90 * 60;
 const DESTINATION_ALTERNATIVE_RADIUS_METERS = 900;
+const WALKING_ROUTE_BASE_URL = 'https://router.project-osrm.org/route/v1/foot';
+const WALKING_ROUTE_TIMEOUT_MS = 4500;
+const WALKING_ROUTE_CACHE_MS = 5 * 60 * 1000;
+const WALKING_ROUTE_MAX_REQUESTS_PER_PLAN = 18;
+const NOMINATIM_SEARCH_URL = 'https://nominatim.openstreetmap.org/search';
+const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
+const NOMINATIM_RESULT_LIMIT = 5;
+const STARTUP_ALERT_SESSION_KEY = 'muvt_startup_alert_seen_session';
+const STARTUP_ALERT_DAY_KEY = 'muvt_startup_alert_seen_day';
+const SEARCH_MIN_QUERY_LENGTH = 3;
+const SEARCH_DEBOUNCE_MS = 350;
+const DIRECT_ONLY_WALK_CAP_METERS = 1500;
+const SECONDARY_MIN_WALK_GAIN_METERS = 250;
+const SECONDARY_MAX_EXTRA_SECONDS = 20 * 60;
 const SEMAFORI_REFRESH_MS = 1000;
 const SEMAFORI_MIN_ZOOM = 14;
+const SIMULATION_MAX_AGE_MS = 20 * 60 * 1000;
+const SIMULATION_DWELL_SECONDS = 60;
+const SIMULATION_SPEED_MPS = 4.5;
+const SIMULATION_MAX_OFFSET_METERS = 1200;
 let timer = null;
 let map = null;
 const markerByTripId = new Map();
@@ -96,6 +127,7 @@ let routeShapeLayer = null;
 let selectedTripContext = null;
 let userPosition = null;
 let manualPosition = null;
+let searchOriginPosition = null;
 let activeOriginMode = 'gps';
 let userMarker = null;
 let userWatchId = null;
@@ -104,8 +136,10 @@ let routingBusy = false;
 let mapPickMode = null;
 let routeDebugEnabled = true;
 let destinationPosition = null;
+let destinationSource = 'map';
 let destinationMarker = null;
 let currentRouteOptions = [];
+let currentSecondaryRouteOptions = [];
 let selectedRouteOptionKey = '';
 let stopsEndpointCache = '';
 let stopsApiDisabled = false;
@@ -113,9 +147,24 @@ let semaforiLayer = null;
 let semaforiLoaded = false;
 let semaforiData = [];
 let semaforiTimer = null;
+let lastSimulatedCount = 0;
 const semaforiMarkersById = new Map();
 const tripDetailsCache = new Map();
 const routeDebugLines = [];
+const walkingRouteCache = new Map();
+const geocodeResultCache = new Map();
+const geocodeDebounceTimers = new Map();
+const geocodeAbortControllers = new Map();
+let walkingRouteRequestBudget = WALKING_ROUTE_MAX_REQUESTS_PER_PLAN;
+const simulatedTripStateByKey = new Map();
+const lastLivePositionByTripKey = new Map();
+let selectedLineFilter = 'all';
+let darkTileLayer = null;
+let satelliteTileLayer = null;
+let activeBaseLayer = null;
+let isSatelliteMode = false;
+let suppressNextMapClick = false;
+let reverseGeocodeAbortController = null;
 
 function renderRouteDebug() {
   if (!routeDebugOutput) {
@@ -148,15 +197,17 @@ function appendRouteDebug(text) {
   renderRouteDebug();
 }
 
-function createBusIcon(routeId) {
+function createBusIcon(routeId, options = {}) {
   if (typeof L === 'undefined') {
     return null;
   }
 
+  const simulated = options.simulated === true;
+
   return L.divIcon({
-    className: 'bus-marker',
-    html: `<span class="bus-marker__badge">🚌 ${routeId || '?'}</span>`,
-    iconSize: [56, 26],
+    className: simulated ? 'bus-marker bus-marker--simulated' : 'bus-marker',
+    html: `<span class="bus-marker__badge">🚌 ${routeId || '?'}${simulated ? ' SIM' : ''}</span>`,
+    iconSize: simulated ? [78, 28] : [56, 26],
     iconAnchor: [28, 13]
   });
 }
@@ -198,6 +249,169 @@ function formatCoordinate(lat, lon) {
   }
 
   return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
+function getSimulationKey(item) {
+  if (item.tripKey) {
+    return item.tripKey;
+  }
+
+  if (item.routeId && item.tripId) {
+    return `${item.routeId}__${item.tripId}`;
+  }
+
+  if (item.routeId && item.stopId && item.arrivalTime) {
+    return `${item.routeId}__${item.stopId}__${item.arrivalTime}`;
+  }
+
+  return '';
+}
+
+function hashString(text) {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function hasValidCoordinates(item) {
+  return item.lat != null && item.lon != null && !Number.isNaN(item.lat) && !Number.isNaN(item.lon);
+}
+
+function applyScheduledSimulation(entities) {
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
+  let simulatedCount = 0;
+  let switchedToLiveCount = 0;
+  const activeKeys = new Set();
+
+  for (const item of entities) {
+    const key = getSimulationKey(item);
+    if (!key) {
+      continue;
+    }
+
+    activeKeys.add(key);
+    if (!hasValidCoordinates(item)) {
+      continue;
+    }
+
+    lastLivePositionByTripKey.set(key, {
+      lat: item.lat,
+      lon: item.lon,
+      updatedAt: nowMs
+    });
+
+    if (simulatedTripStateByKey.has(key)) {
+      simulatedTripStateByKey.delete(key);
+      switchedToLiveCount += 1;
+    }
+  }
+
+  const output = entities.map((item) => {
+    if (hasValidCoordinates(item)) {
+      return {
+        ...item,
+        isSimulated: false,
+        simulationReason: ''
+      };
+    }
+
+    if (!isRouteIdReliable(item)) {
+      return {
+        ...item,
+        isSimulated: false,
+        simulationReason: ''
+      };
+    }
+
+    const scheduledTs = Number(item.arrivalTime);
+    if (!scheduledTs || Number.isNaN(scheduledTs) || nowSeconds < scheduledTs) {
+      return {
+        ...item,
+        isSimulated: false,
+        simulationReason: ''
+      };
+    }
+
+    const key = getSimulationKey(item);
+    if (!key) {
+      return {
+        ...item,
+        isSimulated: false,
+        simulationReason: ''
+      };
+    }
+
+    const stopLocation = stopLocationById.get(item.stopId);
+    const lastLive = lastLivePositionByTripKey.get(key);
+    const baseLat = stopLocation?.lat ?? lastLive?.lat;
+    const baseLon = stopLocation?.lon ?? lastLive?.lon;
+    if (baseLat == null || baseLon == null || Number.isNaN(baseLat) || Number.isNaN(baseLon)) {
+      return {
+        ...item,
+        isSimulated: false,
+        simulationReason: ''
+      };
+    }
+
+    let state = simulatedTripStateByKey.get(key);
+    if (!state) {
+      const seedHash = hashString(`${item.routeId || ''}__${item.tripId || ''}__${item.stopId || ''}`);
+      state = {
+        startedAt: nowMs,
+        bearingDeg: seedHash % 360,
+        baseLat,
+        baseLon,
+        lastSeenAt: nowMs
+      };
+      simulatedTripStateByKey.set(key, state);
+    } else {
+      state.lastSeenAt = nowMs;
+      if (stopLocation) {
+        state.baseLat = stopLocation.lat;
+        state.baseLon = stopLocation.lon;
+      }
+    }
+
+    const elapsedSeconds = Math.max(0, Math.floor((nowMs - state.startedAt) / 1000));
+    const movingSeconds = Math.max(0, elapsedSeconds - SIMULATION_DWELL_SECONDS);
+    const simulatedDistance = Math.min(SIMULATION_MAX_OFFSET_METERS, movingSeconds * SIMULATION_SPEED_MPS);
+    const simulatedPoint = offsetLatLonMeters(state.baseLat, state.baseLon, simulatedDistance, state.bearingDeg);
+
+    simulatedCount += 1;
+
+    return {
+      ...item,
+      vehicleId: item.vehicleId || `SIM-${item.routeId || 'X'}-${item.tripId || 'trip'}`,
+      lat: simulatedPoint.lat,
+      lon: simulatedPoint.lon,
+      speed: movingSeconds > 0 ? SIMULATION_SPEED_MPS : 0,
+      currentStatus: 'SimulatedNoSignal',
+      positionTimestamp: nowSeconds,
+      isSimulated: true,
+      simulationReason: 'Segnale assente: posizione stimata da orario previsto e fermata corrente.'
+    };
+  });
+
+  for (const [key, state] of simulatedTripStateByKey.entries()) {
+    if (!activeKeys.has(key) || nowMs - state.lastSeenAt > SIMULATION_MAX_AGE_MS) {
+      simulatedTripStateByKey.delete(key);
+    }
+  }
+
+  for (const [key, state] of lastLivePositionByTripKey.entries()) {
+    if (nowMs - state.updatedAt > SIMULATION_MAX_AGE_MS) {
+      lastLivePositionByTripKey.delete(key);
+    }
+  }
+
+  return {
+    entities: output,
+    simulatedCount,
+    switchedToLiveCount
+  };
 }
 
 function showFeedBanner(text, level) {
@@ -293,13 +507,20 @@ function initMap() {
   map = L.map('map', {
     center: MAP_DEFAULT_CENTER,
     zoom: MAP_DEFAULT_ZOOM,
-    zoomControl: true
+    zoomControl: false
   });
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+  });
+
+  satelliteTileLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Tiles &copy; Esri'
+  });
+
+  applyBasemapMode();
 
   if (!map.getPane('semaforiPane')) {
     const pane = map.createPane('semaforiPane');
@@ -311,7 +532,15 @@ function initMap() {
   });
 
   map.on('click', (event) => {
+    if (suppressNextMapClick) {
+      suppressNextMapClick = false;
+      return;
+    }
+
     if (!mapPickMode) {
+      if (!isMapInteractiveTarget(event)) {
+        resetActiveMapSelection();
+      }
       return;
     }
 
@@ -321,8 +550,13 @@ function initMap() {
         lon: event.latlng.lng,
         accuracy: null
       };
+      searchOriginPosition = null;
       activeOriginMode = 'manual';
       mapPickMode = null;
+      if (originSearchInput) {
+        originSearchInput.value = '';
+      }
+      hideSearchResults('origin');
       updateUserMarker();
       setRouteSummary(
         `Posizione partenza impostata (${manualPosition.lat.toFixed(5)}, ${manualPosition.lon.toFixed(5)}).`
@@ -335,16 +569,12 @@ function initMap() {
     }
 
     if (mapPickMode === 'destination') {
-      destinationPosition = {
-        lat: event.latlng.lat,
-        lon: event.latlng.lng
-      };
-      mapPickMode = null;
-      syncDestinationFromMapPoint();
-      if (routeAutoRefresh.checked) {
-        calculateRouteToSelectedStop();
-      }
+      setDestinationFromMapPoint(event.latlng.lat, event.latlng.lng);
     }
+  });
+
+  map.on('contextmenu', (event) => {
+    setDestinationFromMapPoint(event.latlng.lat, event.latlng.lng);
   });
 
   applySemaforiVisibility();
@@ -720,7 +950,7 @@ function syncDestinationFromMapPoint() {
   updateDestinationMarker();
 
   if (!destinationPosition) {
-    mapDestinationText.textContent = 'Arrivo non impostato. Clicca “Scegli arrivo dalla mappa”.';
+    mapDestinationText.textContent = 'Arrivo non impostato. Usa mappa o ricerca indirizzo.';
     return;
   }
 
@@ -734,28 +964,27 @@ function syncDestinationFromMapPoint() {
     destinationStopSelect.value = nearest.stopId;
   }
 
-  mapDestinationText.textContent = `Arrivo mappa (${destinationPosition.lat.toFixed(5)}, ${destinationPosition.lon.toFixed(5)}) · fermata più vicina: ${formatStopName(nearest.stopId)} (${Math.round(nearest.distanceMeters)} m).`;
+  const sourceLabel = destinationSource === 'search' ? 'Arrivo ricerca' : 'Arrivo mappa';
+  mapDestinationText.textContent = `${sourceLabel} (${destinationPosition.lat.toFixed(5)}, ${destinationPosition.lon.toFixed(5)}) · fermata più vicina: ${formatStopName(nearest.stopId)} (${Math.round(nearest.distanceMeters)} m).`;
 }
 
 function buildPopup(item) {
-  const lines = [
-    `<strong>Linea:</strong> ${item.routeId || 'n/d'}`,
-    `<strong>Veicolo:</strong> ${item.vehicleId || 'n/d'}`,
-    `<strong>Trip:</strong> ${item.tripId || 'n/d'}`,
-    `<strong>Velocità:</strong> ${formatSpeed(item.speed)}`,
-    `<strong>Ritardo:</strong> ${formatDelay(item.delay)}`
-  ];
+  const routeLabel = item.routeId || '?';
+  const stopName = formatStopName(item.stopId);
+  const destText = stopName && stopName !== 'n/d' && stopName !== 'Fermata non disponibile'
+    ? stopName
+    : '';
 
-  const age = formatPositionAge(item.positionTimestamp);
-  if (age) {
-    lines.push(`<span class="popup-stale">📡 Posizione aggiornata ${age}</span>`);
+  let html = `<div class="popup-route">🚌 ${routeLabel}</div>`;
+  if (destText) {
+    html += `<div class="popup-dest">→ ${destText}</div>`;
   }
 
-  if (item.confirmedRouteId && item.routeId !== item.confirmedRouteId) {
-    lines.push(`<span class="popup-stale">⚠️ Linea confermata: ${item.confirmedRouteId}</span>`);
+  if (item.isSimulated) {
+    html += `<div class="popup-stale">⚠️ Posizione stimata</div>`;
   }
 
-  return lines.join('<br/>');
+  return html;
 }
 
 function formatDistanceMeters(meters) {
@@ -783,6 +1012,207 @@ function formatDurationSeconds(seconds) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${h}h ${m}m`;
+}
+
+function buildGeocodeCacheKey(rawQuery) {
+  return rawQuery.trim().toLocaleLowerCase('it-IT');
+}
+
+function formatGeocodeResultLabel(item) {
+  const text = String(item?.display_name || '').trim();
+  if (!text) {
+    return 'Indirizzo non disponibile';
+  }
+
+  const parts = text.split(',').map((chunk) => chunk.trim()).filter(Boolean);
+  return parts.slice(0, 4).join(', ');
+}
+
+function hideSearchResults(target) {
+  const box = target === 'origin' ? originSearchResults : destinationSearchResults;
+  if (!box) {
+    return;
+  }
+
+  box.hidden = true;
+  box.innerHTML = '';
+  delete box.dataset.items;
+}
+
+function renderSearchResults(target, items) {
+  const box = target === 'origin' ? originSearchResults : destinationSearchResults;
+  if (!box) {
+    return;
+  }
+
+  if (!items.length) {
+    box.hidden = false;
+    box.innerHTML = '<div class="geocode-empty">Nessun risultato</div>';
+    return;
+  }
+
+  box.hidden = false;
+  box.innerHTML = items
+    .map((item, index) => {
+      const label = formatGeocodeResultLabel(item);
+      return `<button type="button" class="geocode-result-item" data-target="${target}" data-index="${index}">${label}</button>`;
+    })
+    .join('');
+  box.dataset.items = JSON.stringify(items);
+}
+
+function readRenderedSearchItems(target) {
+  const box = target === 'origin' ? originSearchResults : destinationSearchResults;
+  if (!box) {
+    return [];
+  }
+
+  try {
+    const raw = box.dataset.items || '[]';
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchNominatimSuggestions(rawQuery, signal) {
+  const query = rawQuery.trim();
+  if (query.length < SEARCH_MIN_QUERY_LENGTH) {
+    return [];
+  }
+
+  const cacheKey = buildGeocodeCacheKey(query);
+  const now = Date.now();
+  const cached = geocodeResultCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.items;
+  }
+
+  const params = new URLSearchParams({
+    q: query,
+    format: 'jsonv2',
+    addressdetails: '0',
+    limit: String(NOMINATIM_RESULT_LIMIT),
+    dedupe: '1'
+  });
+
+  const response = await fetch(`${NOMINATIM_SEARCH_URL}?${params.toString()}`, {
+    cache: 'no-store',
+    signal,
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = await response.json();
+  const items = (Array.isArray(payload) ? payload : [])
+    .map((item) => {
+      const lat = Number(item?.lat);
+      const lon = Number(item?.lon);
+      if (Number.isNaN(lat) || Number.isNaN(lon)) {
+        return null;
+      }
+
+      return {
+        lat,
+        lon,
+        display_name: String(item?.display_name || '').trim()
+      };
+    })
+    .filter(Boolean);
+
+  geocodeResultCache.set(cacheKey, {
+    items,
+    expiresAt: now + WALKING_ROUTE_CACHE_MS
+  });
+  return items;
+}
+
+function scheduleSearch(target, query) {
+  const previousTimer = geocodeDebounceTimers.get(target);
+  if (previousTimer) {
+    clearTimeout(previousTimer);
+  }
+
+  if (query.trim().length < SEARCH_MIN_QUERY_LENGTH) {
+    hideSearchResults(target);
+    return;
+  }
+
+  const timerId = setTimeout(async () => {
+    const previousController = geocodeAbortControllers.get(target);
+    if (previousController) {
+      previousController.abort();
+    }
+
+    const controller = new AbortController();
+    geocodeAbortControllers.set(target, controller);
+
+    try {
+      const items = await fetchNominatimSuggestions(query, controller.signal);
+      renderSearchResults(target, items);
+    } catch {
+      hideSearchResults(target);
+    }
+  }, SEARCH_DEBOUNCE_MS);
+
+  geocodeDebounceTimers.set(target, timerId);
+}
+
+function applyOriginSearchSelection(item) {
+  if (!item) {
+    return;
+  }
+
+  searchOriginPosition = {
+    lat: item.lat,
+    lon: item.lon,
+    accuracy: null
+  };
+  manualPosition = null;
+  activeOriginMode = 'search';
+  mapPickMode = null;
+
+  if (originSearchInput) {
+    originSearchInput.value = formatGeocodeResultLabel(item);
+  }
+
+  updateUserMarker();
+  hideSearchResults('origin');
+  setRouteSummary(`Partenza impostata da ricerca: ${formatGeocodeResultLabel(item)}.`);
+
+  if (routeAutoRefresh.checked) {
+    calculateRouteToSelectedStop();
+  }
+}
+
+function applyDestinationSearchSelection(item) {
+  if (!item) {
+    return;
+  }
+
+  destinationPosition = {
+    lat: item.lat,
+    lon: item.lon
+  };
+  destinationSource = 'search';
+  mapPickMode = null;
+
+  if (destinationSearchInput) {
+    destinationSearchInput.value = formatGeocodeResultLabel(item);
+  }
+
+  hideSearchResults('destination');
+  syncDestinationFromMapPoint();
+
+  if (routeAutoRefresh.checked) {
+    calculateRouteToSelectedStop();
+  }
 }
 
 function formatClockFromEta(etaSeconds) {
@@ -856,8 +1286,241 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+function resetWalkingRouteBudget() {
+  walkingRouteRequestBudget = WALKING_ROUTE_MAX_REQUESTS_PER_PLAN;
+}
+
+function buildWalkingRouteCacheKey(origin, destination) {
+  return [
+    Number(origin.lat).toFixed(5),
+    Number(origin.lon).toFixed(5),
+    Number(destination.lat).toFixed(5),
+    Number(destination.lon).toFixed(5)
+  ].join('__');
+}
+
+function buildStraightWalkFallback(origin, destination) {
+  const distanceMeters = haversineMeters(origin.lat, origin.lon, destination.lat, destination.lon);
+  const durationSeconds = Math.max(1, Math.round(distanceMeters / WALK_SPEED_MPS));
+  return {
+    points: [
+      [origin.lat, origin.lon],
+      [destination.lat, destination.lon]
+    ],
+    distanceMeters: Math.round(distanceMeters),
+    durationSeconds,
+    source: 'airline-fallback'
+  };
+}
+
+async function fetchWalkingRoute(origin, destination) {
+  if (!origin || !destination) {
+    return null;
+  }
+
+  const cacheKey = buildWalkingRouteCacheKey(origin, destination);
+  const now = Date.now();
+  const cached = walkingRouteCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const fallback = buildStraightWalkFallback(origin, destination);
+  if (walkingRouteRequestBudget <= 0) {
+    return fallback;
+  }
+
+  walkingRouteRequestBudget -= 1;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WALKING_ROUTE_TIMEOUT_MS);
+
+  try {
+    const url = `${WALKING_ROUTE_BASE_URL}/${origin.lon},${origin.lat};${destination.lon},${destination.lat}?overview=full&geometries=geojson&steps=false`;
+    const response = await fetch(url, {
+      cache: 'no-store',
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    const payload = await response.json();
+    const route = Array.isArray(payload?.routes) ? payload.routes[0] : null;
+    const coords = Array.isArray(route?.geometry?.coordinates) ? route.geometry.coordinates : [];
+
+    if (!route || coords.length < 2) {
+      return fallback;
+    }
+
+    const points = coords
+      .map((item) => {
+        const lon = Number(item?.[0]);
+        const lat = Number(item?.[1]);
+        if (Number.isNaN(lat) || Number.isNaN(lon)) {
+          return null;
+        }
+        return [lat, lon];
+      })
+      .filter(Boolean);
+
+    if (points.length < 2) {
+      return fallback;
+    }
+
+    const value = {
+      points,
+      distanceMeters: Math.round(Number(route.distance) || fallback.distanceMeters),
+      durationSeconds: Math.round(Number(route.duration) || fallback.durationSeconds),
+      source: 'osrm-foot'
+    };
+
+    walkingRouteCache.set(cacheKey, {
+      expiresAt: now + WALKING_ROUTE_CACHE_MS,
+      value
+    });
+
+    return value;
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function collectBoardingCandidates(option) {
+  const candidates = [];
+  const seen = new Set();
+
+  const pushCandidate = (stopId, stopName, location) => {
+    if (!stopId || !location) {
+      return;
+    }
+    const key = String(stopId);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    candidates.push({ stopId, stopName: stopName || formatStopName(stopId), location });
+  };
+
+  pushCandidate(option.boardStopId, option.boardStopName, option.boardStopLocation);
+  for (const alt of option.alternativeBoardingStops || []) {
+    pushCandidate(alt?.stopId, alt?.stopName, stopLocationById.get(alt?.stopId));
+  }
+
+  return candidates;
+}
+
+async function enrichOptionWithWalking(option, origin) {
+  const candidates = collectBoardingCandidates(option);
+  if (!candidates.length) {
+    return option;
+  }
+
+  let best = null;
+  for (const candidate of candidates.slice(0, 5)) {
+    const walking = await fetchWalkingRoute(origin, candidate.location);
+    if (!walking) {
+      continue;
+    }
+
+    const walkSeconds = Math.max(1, Math.round(walking.durationSeconds));
+    const reachable = (option.boardEtaSeconds || 0) + BOARDING_BUFFER_SECONDS >= walkSeconds;
+    if (!reachable) {
+      continue;
+    }
+
+    const waitSeconds = Math.max(0, (option.boardEtaSeconds || 0) - walkSeconds);
+    const totalSeconds = walkSeconds + waitSeconds + Math.max(0, Number(option.rideSeconds) || 0);
+
+    if (!best || totalSeconds < best.totalSeconds || (totalSeconds === best.totalSeconds && walkSeconds < best.walkSeconds)) {
+      best = {
+        candidate,
+        walking,
+        walkSeconds,
+        waitSeconds,
+        totalSeconds
+      };
+    }
+  }
+
+  if (!best) {
+    const fallback = await fetchWalkingRoute(origin, candidates[0].location);
+    if (!fallback) {
+      return option;
+    }
+
+    const walkSeconds = Math.max(1, Math.round(fallback.durationSeconds));
+    const waitSeconds = Math.max(0, (option.boardEtaSeconds || 0) - walkSeconds);
+    return {
+      ...option,
+      walkDistanceMeters: Math.round(fallback.distanceMeters),
+      walkSeconds,
+      waitSeconds,
+      totalSeconds: Math.round(walkSeconds + waitSeconds + Math.max(0, Number(option.rideSeconds) || 0)),
+      walkPathCoordinates: fallback.points,
+      walkRouteSource: fallback.source
+    };
+  }
+
+  return {
+    ...option,
+    boardStopId: best.candidate.stopId,
+    boardStopName: best.candidate.stopName,
+    boardStopLocation: best.candidate.location,
+    walkDistanceMeters: Math.round(best.walking.distanceMeters),
+    walkSeconds: best.walkSeconds,
+    waitSeconds: Math.round(best.waitSeconds),
+    totalSeconds: Math.round(best.totalSeconds),
+    walkPathCoordinates: best.walking.points,
+    walkRouteSource: best.walking.source
+  };
+}
+
+async function enrichOptionsWithWalkingRoutes(options, origin) {
+  resetWalkingRouteBudget();
+  const result = [];
+  for (const option of options) {
+    result.push(await enrichOptionWithWalking(option, origin));
+  }
+  return result;
+}
+
+function applyDestinationWalkMetrics(options, destinationPoint) {
+  if (!destinationPoint) {
+    return options.map((item) => ({
+      ...item,
+      destinationWalkMeters: 0,
+      destinationWalkSeconds: 0,
+      totalWalkMeters: Math.round(Number(item.walkDistanceMeters) || 0),
+      totalEffectiveSeconds: Math.round(Number(item.totalSeconds) || 0)
+    }));
+  }
+
+  return options.map((item) => {
+    const destinationLoc = item.destinationStopLocation;
+    const destinationWalkMeters = destinationLoc
+      ? Math.round(haversineMeters(destinationLoc.lat, destinationLoc.lon, destinationPoint.lat, destinationPoint.lon))
+      : 0;
+    const destinationWalkSeconds = Math.max(0, Math.round(destinationWalkMeters / WALK_SPEED_MPS));
+    const totalWalkMeters = Math.round((Number(item.walkDistanceMeters) || 0) + destinationWalkMeters);
+    const totalEffectiveSeconds = Math.round((Number(item.totalSeconds) || 0) + destinationWalkSeconds);
+
+    return {
+      ...item,
+      destinationWalkMeters,
+      destinationWalkSeconds,
+      totalWalkMeters,
+      totalEffectiveSeconds
+    };
+  });
+}
+
 function setRouteSummary(text) {
-  routeSummaryText.textContent = text;
+  if (routeSummaryText) routeSummaryText.textContent = text;
+  if (routeSummaryWrap) routeSummaryWrap.hidden = false;
 }
 
 function clearNavigationLayer() {
@@ -867,9 +1530,207 @@ function clearNavigationLayer() {
   }
 }
 
+function resetActiveMapSelection() {
+  if (!map) {
+    return;
+  }
+
+  map.closePopup();
+  clearNavigationLayer();
+
+  if (routeShapeLayer && map.hasLayer(routeShapeLayer)) {
+    map.removeLayer(routeShapeLayer);
+  }
+  routeShapeLayer = null;
+  selectedTripContext = null;
+  selectedRouteOptionKey = '';
+}
+
+function getTodayStorageKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function hasSeenStartupAlert() {
+  const today = getTodayStorageKey();
+  let seenInSession = false;
+  let seenToday = false;
+
+  try {
+    seenInSession = sessionStorage.getItem(STARTUP_ALERT_SESSION_KEY) === '1';
+  } catch {
+    seenInSession = false;
+  }
+
+  try {
+    seenToday = localStorage.getItem(STARTUP_ALERT_DAY_KEY) === today;
+  } catch {
+    seenToday = false;
+  }
+
+  return seenInSession || seenToday;
+}
+
+function markStartupAlertSeen() {
+  const today = getTodayStorageKey();
+  try {
+    sessionStorage.setItem(STARTUP_ALERT_SESSION_KEY, '1');
+  } catch {
+  }
+  try {
+    localStorage.setItem(STARTUP_ALERT_DAY_KEY, today);
+  } catch {
+  }
+}
+
+function closeStartupAlertModal() {
+  if (!startupAlertModal) {
+    return;
+  }
+
+  startupAlertModal.classList.remove('is-visible');
+  startupAlertModal.hidden = true;
+  markStartupAlertSeen();
+}
+
+function openStartupAlertModal() {
+  if (!startupAlertModal || hasSeenStartupAlert()) {
+    return;
+  }
+
+  startupAlertModal.hidden = false;
+  requestAnimationFrame(() => {
+    startupAlertModal.classList.add('is-visible');
+  });
+}
+
+function isMapInteractiveTarget(event) {
+  const target = event?.originalEvent?.target;
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest('.leaflet-marker-pane, .leaflet-popup-pane, .leaflet-control'));
+}
+
+function getLineFilteredEntities(items) {
+  if (!Array.isArray(items) || selectedLineFilter === 'all') {
+    return Array.isArray(items) ? items : [];
+  }
+
+  return items.filter((item) => String(item.routeId || '') === String(selectedLineFilter));
+}
+
+function renderLineFilterOptions(availableRouteIds) {
+  if (!lineFilterSelect) {
+    return;
+  }
+
+  const previousValue = lineFilterSelect.value || selectedLineFilter || 'all';
+  lineFilterSelect.innerHTML = '';
+
+  const allOption = document.createElement('option');
+  allOption.value = 'all';
+  allOption.textContent = 'Tutte';
+  lineFilterSelect.appendChild(allOption);
+
+  for (const routeId of availableRouteIds) {
+    const option = document.createElement('option');
+    option.value = routeId;
+    option.textContent = routeId;
+    lineFilterSelect.appendChild(option);
+  }
+
+  const shouldUsePrevious = previousValue === 'all' || availableRouteIds.includes(previousValue);
+  selectedLineFilter = shouldUsePrevious ? previousValue : 'all';
+  lineFilterSelect.value = selectedLineFilter;
+}
+
+function applyBasemapMode() {
+  if (!map || !darkTileLayer || !satelliteTileLayer) {
+    return;
+  }
+
+  if (activeBaseLayer && map.hasLayer(activeBaseLayer)) {
+    map.removeLayer(activeBaseLayer);
+  }
+
+  activeBaseLayer = isSatelliteMode ? satelliteTileLayer : darkTileLayer;
+  activeBaseLayer.addTo(map);
+
+  if (basemapToggleBtn) {
+    basemapToggleBtn.classList.toggle('is-satellite', isSatelliteMode);
+    basemapToggleBtn.title = isSatelliteMode ? 'Passa a mappa dark' : 'Passa a satellite';
+    basemapToggleBtn.setAttribute('aria-label', isSatelliteMode ? 'Passa a mappa dark' : 'Passa a satellite');
+  }
+}
+
+async function reverseGeocodeLatLon(lat, lon) {
+  if (reverseGeocodeAbortController) {
+    reverseGeocodeAbortController.abort();
+  }
+  reverseGeocodeAbortController = new AbortController();
+
+  try {
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lon),
+      format: 'jsonv2',
+      zoom: '18',
+      addressdetails: '1'
+    });
+
+    const response = await fetch(`${NOMINATIM_REVERSE_URL}?${params.toString()}`, {
+      cache: 'no-store',
+      signal: reverseGeocodeAbortController.signal,
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      return '';
+    }
+
+    const payload = await response.json();
+    return String(
+      payload?.name ||
+      payload?.display_name ||
+      ''
+    ).trim();
+  } catch {
+    return '';
+  } finally {
+    reverseGeocodeAbortController = null;
+  }
+}
+
+async function setDestinationFromMapPoint(lat, lon) {
+  destinationPosition = { lat, lon };
+  destinationSource = 'map';
+  mapPickMode = null;
+
+  hideSearchResults('destination');
+  syncDestinationFromMapPoint();
+
+  const reverseLabel = await reverseGeocodeLatLon(lat, lon);
+  if (destinationSearchInput) {
+    destinationSearchInput.value = reverseLabel || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  }
+
+  await calculateRouteToSelectedStop();
+}
+
 function getEffectiveOriginPosition() {
   if (activeOriginMode === 'manual' && manualPosition) {
     return manualPosition;
+  }
+
+  if (activeOriginMode === 'search' && searchOriginPosition) {
+    return searchOriginPosition;
   }
 
   return userPosition;
@@ -942,53 +1803,15 @@ function refreshDestinationOptions() {
   syncDestinationFromMapPoint();
 }
 
-function renderRouteSteps(route) {
-  routeSteps.innerHTML = '';
-
-  const steps = route?.legs?.[0]?.steps || [];
-  if (!steps.length) {
-    routeSteps.innerHTML = '<li>Nessuna indicazione disponibile</li>';
-    return;
-  }
-
-  routeSteps.innerHTML = steps
-    .slice(0, 12)
-    .map((step) => {
-      const road = step.name ? ` su ${step.name}` : '';
-      const action = step.maneuver?.type || 'Procedi';
-      return `<li>${action}${road} · ${formatDistanceMeters(step.distance)} · ${formatDurationSeconds(step.duration)}</li>`;
-    })
-    .join('');
+function renderRouteSteps() {
+  // No-op: step-by-step directions removed in Zero-UI
 }
 
-function renderBusRouteSteps(best) {
-  routeSteps.innerHTML = '';
-
-  const boardTimeText = formatClockFromEta(best.boardEtaSeconds);
-  const destinationTimeText = formatClockFromEta(best.destinationEtaSeconds);
-  const transferBoardTimeText = formatClockFromEta(best.transferBoardEtaSeconds);
-
-  if (best.transferCount > 0 && best.transferStopName) {
-    const lines = [
-      `Raggiungi a piedi ${best.boardStopName} (${formatDistanceMeters(best.walkDistanceMeters)}, circa ${formatDurationSeconds(best.walkSeconds)}).`,
-      `Primo bus: linea ${best.routeId} (partenza ${boardTimeText}) fino a ${best.transferStopName}.`,
-      `Cambio: linea ${best.transferRouteId} da ${best.transferStopName} (partenza ${transferBoardTimeText}) a ${best.destinationStopName}.`,
-      `Arrivo previsto: ${destinationTimeText}. Tempo totale: ${formatDurationSeconds(best.totalSeconds)}.`
-    ];
-    routeSteps.innerHTML = lines.map((line) => `<li>${line}</li>`).join('');
-    return;
-  }
-
-  const lines = [
-    `Raggiungi a piedi ${best.boardStopName} (${formatDistanceMeters(best.walkDistanceMeters)}, circa ${formatDurationSeconds(best.walkSeconds)}).`,
-    `Attendi il bus linea ${best.routeId} (veicolo ${best.vehicleId || 'n/d'}) con partenza prevista alle ${boardTimeText}.`,
-    `Sali e scendi a ${best.destinationStopName} dopo ${best.stopsToTravel} fermate (arrivo previsto alle ${destinationTimeText}).`
-  ];
-
-  routeSteps.innerHTML = lines.map((line) => `<li>${line}</li>`).join('');
+function renderBusRouteSteps() {
+  // No-op: step-by-step directions removed in Zero-UI
 }
 
-function renderRouteOptionCards(options, best) {
+function renderRouteOptionCards(options, best, secondaryOptions = []) {
   if (!routeOptionsList) {
     return;
   }
@@ -998,41 +1821,30 @@ function renderRouteOptionCards(options, best) {
     return;
   }
 
+  // Server already handles trip-dedup, route-dedup & segment grouping.
+  // Just group by routeId + boardStop + destStop for card layout.
   const top = options.slice(0, 24);
-
-  const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
-  const uiUnique = [];
-  const uiSeen = new Set();
-  for (const item of top) {
-    const uiKey = [
-      item.routeId,
-      item.transferRouteId || '',
-      item.boardStopId,
-      item.destinationStopId,
-      Math.floor((item.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
-      Math.floor((item.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
-      Math.floor((item.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS),
-      Math.floor((item.totalSeconds || 0) / DEDUP_BUCKET_SECONDS)
-    ].join('__');
-    if (uiSeen.has(uiKey)) {
-      continue;
-    }
-    uiSeen.add(uiKey);
-    uiUnique.push(item);
-  }
-
   const groups = new Map();
-  for (const item of uiUnique) {
+  for (const item of top) {
     const lineLabel = item.transferCount > 0 && item.transferRouteId
       ? `${item.routeId} → ${item.transferRouteId}`
       : String(item.routeId || '?');
-    const values = groups.get(lineLabel) || [];
+    const groupKey = `${lineLabel}__${item.boardStopId || ''}__${item.destinationStopId || ''}`;
+    const values = groups.get(groupKey) || [];
     values.push(item);
-    groups.set(lineLabel, values);
+    groups.set(groupKey, values);
   }
 
-  const groupCards = [...groups.entries()].map(([lineLabel, values]) => {
-    values.sort((a, b) => a.boardEtaSeconds - b.boardEtaSeconds || a.totalSeconds - b.totalSeconds || a.walkDistanceMeters - b.walkDistanceMeters);
+  const groupCards = [...groups.entries()].map(([groupKey, values]) => {
+    values.sort((a, b) => {
+      if ((a.totalEffectiveSeconds || a.totalSeconds) !== (b.totalEffectiveSeconds || b.totalSeconds)) {
+        return (a.totalEffectiveSeconds || a.totalSeconds) - (b.totalEffectiveSeconds || b.totalSeconds);
+      }
+      if ((a.totalWalkMeters || a.walkDistanceMeters) !== (b.totalWalkMeters || b.walkDistanceMeters)) {
+        return (a.totalWalkMeters || a.walkDistanceMeters) - (b.totalWalkMeters || b.walkDistanceMeters);
+      }
+      return a.boardEtaSeconds - b.boardEtaSeconds;
+    });
     const head = values[0];
     const others = values.slice(1, 6);
     const headKey = getRouteOptionKey(head);
@@ -1044,13 +1856,39 @@ function renderRouteOptionCards(options, best) {
       (head.transferRouteId || '') === (best.transferRouteId || '');
     const isSelected = selectedRouteOptionKey && selectedRouteOptionKey === headKey;
 
-    const lineText = head.transferCount > 0
-      ? `Linee ${lineLabel}`
-      : `Linea ${lineLabel}`;
+    // Build route pills (Google Maps style: "01 19 53")
+    const allRoutes = [head.routeId];
+    if (Array.isArray(head.alternativeRoutes)) {
+      for (const alt of head.alternativeRoutes) {
+        if (!allRoutes.includes(alt.routeId)) {
+          allRoutes.push(alt.routeId);
+        }
+      }
+    }
+    const routePills = allRoutes.map(r => `<span class="route-pill">${r}</span>`).join(' ');
+
+    let lineText;
+    if (head.transferCount > 0) {
+      const lineLabel = `${head.routeId} → ${head.transferRouteId}`;
+      lineText = `Linee ${lineLabel}`;
+    } else if (allRoutes.length > 1) {
+      lineText = `Linee ${routePills}`;
+    } else {
+      lineText = `Linea ${routePills}`;
+    }
 
     const transferText = head.transferCount > 0 && head.transferStopName
       ? ` · Cambio: ${head.transferStopName}`
       : '';
+
+    const alternativeStopNames = Array.isArray(head.alternativeBoardingStops)
+      ? [...new Set(
+          head.alternativeBoardingStops
+            .map((s) => String(s?.stopName || '').trim())
+            .filter(Boolean)
+            .filter((name) => name !== String(head.boardStopName || '').trim())
+        )]
+      : [];
 
     const othersMarkup = others.length
       ? `
@@ -1065,11 +1903,11 @@ function renderRouteOptionCards(options, best) {
                   return `
               <article class="route-option-card route-option-card--extra ${isItemSelected ? 'route-option-card--selected' : ''}" data-route-key="${itemKey}">
                 <div class="route-option-meta">
-                  <span class="route-option-chip">Walk ${formatDistanceMeters(item.walkDistanceMeters)}</span>
+                  <span class="route-option-chip">🚶 ${formatDistanceMeters(item.walkDistanceMeters)}</span>
                   <span class="route-option-chip">Partenza ${formatClockFromEta(item.boardEtaSeconds)}</span>
                   ${item.transferCount > 0 ? `<span class="route-option-chip">Cambio ${formatClockFromEta(item.transferBoardEtaSeconds)}</span>` : ''}
                   <span class="route-option-chip">Arrivo ${formatClockFromEta(item.destinationEtaSeconds)}</span>
-                  <span class="route-option-chip">Totale ${formatDurationSeconds(item.totalSeconds)}</span>
+                  <span class="route-option-chip">Totale ${formatDurationSeconds(item.totalEffectiveSeconds || item.totalSeconds)}</span>
                 </div>
                 <p class="route-option-line">Salita: ${item.boardStopName} · Discesa: ${item.destinationStopName}</p>
               </article>
@@ -1086,21 +1924,56 @@ function renderRouteOptionCards(options, best) {
       <article class="route-option-card ${isBest ? 'route-option-card--best' : ''} ${isSelected ? 'route-option-card--selected' : ''}" data-route-key="${headKey}">
         <p class="route-option-title">${lineText}${head.vehicleId ? ` · Veicolo ${head.vehicleId}` : ''}</p>
         <div class="route-option-meta">
-          <span class="route-option-chip">Walk ${formatDistanceMeters(head.walkDistanceMeters)}</span>
+          <span class="route-option-chip">🚶 ${formatDistanceMeters(head.totalWalkMeters || head.walkDistanceMeters)}</span>
           <span class="route-option-chip">Partenza ${formatClockFromEta(head.boardEtaSeconds)}</span>
           ${head.transferCount > 0 ? `<span class="route-option-chip">Cambio ${formatClockFromEta(head.transferBoardEtaSeconds)}</span>` : ''}
           <span class="route-option-chip">Arrivo ${formatClockFromEta(head.destinationEtaSeconds)}</span>
-          <span class="route-option-chip">Totale ${formatDurationSeconds(head.totalSeconds)}</span>
+          <span class="route-option-chip">Totale ${formatDurationSeconds(head.totalEffectiveSeconds || head.totalSeconds)}</span>
         </div>
-        <p class="route-option-line">Salita: ${head.boardStopName}</p>
+        <p class="route-option-line">🚶 ${formatDistanceMeters(head.walkDistanceMeters)} fino a salita · Salita: ${head.boardStopName}${alternativeStopNames.length ? ` <span class="alt-stops-hint">(anche da ${alternativeStopNames.join(', ')})</span>` : ''}
+        </p>
         <p class="route-option-line">Discesa: ${head.destinationStopName}</p>
+        <p class="route-option-line">Ultimo tratto a piedi: ${formatDistanceMeters(head.destinationWalkMeters || 0)}</p>
         <p class="route-option-line">Fermate: ${head.stopsToTravel}${transferText}${isBest ? ' · Consigliato' : ''}</p>
         ${othersMarkup}
       </article>
     `;
   });
 
-  routeOptionsList.innerHTML = groupCards.join('');
+  const secondaryMarkup = Array.isArray(secondaryOptions) && secondaryOptions.length
+    ? `
+      <section class="secondary-options">
+        <h3 class="secondary-options__title">Opzioni secondarie (meno strada a piedi, con cambio)</h3>
+        <div class="secondary-options__grid">
+          ${secondaryOptions
+            .slice(0, 6)
+            .map((item) => {
+              const key = getRouteOptionKey(item);
+              const isSelected = selectedRouteOptionKey && selectedRouteOptionKey === key;
+              return `
+                <article class="route-option-card route-option-card--secondary ${isSelected ? 'route-option-card--selected' : ''}" data-route-key="${key}">
+                  <p class="route-option-title">Linee ${item.routeId} → ${item.transferRouteId}</p>
+                  <div class="route-option-meta">
+                    <span class="route-option-chip">🚶 ${formatDistanceMeters(item.walkDistanceMeters)}</span>
+                    <span class="route-option-chip">Partenza ${formatClockFromEta(item.boardEtaSeconds)}</span>
+                    <span class="route-option-chip">Cambio ${formatClockFromEta(item.transferBoardEtaSeconds)}</span>
+                    <span class="route-option-chip">Arrivo ${formatClockFromEta(item.destinationEtaSeconds)}</span>
+                    <span class="route-option-chip">Totale ${formatDurationSeconds(item.totalEffectiveSeconds || item.totalSeconds)}</span>
+                  </div>
+                  <p class="route-option-line">Salita: ${item.boardStopName}</p>
+                  <p class="route-option-line">Discesa: ${item.destinationStopName}</p>
+                  <p class="route-option-line">A piedi totale: ${formatDistanceMeters(item.totalWalkMeters || item.walkDistanceMeters)}</p>
+                  <p class="route-option-line">Cambio: ${item.transferStopName || 'n/d'}</p>
+                </article>
+              `;
+            })
+            .join('')}
+        </div>
+      </section>
+    `
+    : '';
+
+  routeOptionsList.innerHTML = `${groupCards.join('')}${secondaryMarkup}`;
 }
 
 function buildFallbackSegment(start, end) {
@@ -1342,18 +2215,19 @@ async function renderBusRouteOnMap(best) {
 
   navRouteLayer = L.layerGroup();
 
-  const walkSegment = L.polyline(
-    [
-      [origin.lat, origin.lon],
-      [board.lat, board.lon]
-    ],
-    {
-      color: '#2e7d32',
-      weight: 4,
-      dashArray: '8,6',
-      opacity: 0.9
-    }
-  );
+  const walkPoints = Array.isArray(best.walkPathCoordinates) && best.walkPathCoordinates.length >= 2
+    ? best.walkPathCoordinates
+    : [
+        [origin.lat, origin.lon],
+        [board.lat, board.lon]
+      ];
+
+  const walkSegment = L.polyline(walkPoints, {
+    color: '#2e7d32',
+    weight: 4,
+    dashArray: '8,6',
+    opacity: 0.9
+  });
 
   const busSegmentA = L.polyline(
     segments.firstSegment,
@@ -1469,14 +2343,15 @@ async function calculateRouteToSelectedStop() {
       destinationRadiusMeters: DESTINATION_ALTERNATIVE_RADIUS_METERS,
       maxLookAheadSeconds: MAX_FUTURE_LOOKAHEAD_SECONDS,
       allowTransfers: Boolean(allowTransfers?.checked),
-      maxTransfers: allowTransfers?.checked ? 1 : 0
+      maxTransfers: allowTransfers?.checked ? 1 : 0,
+      includeSecondaryTransfers: true
     });
 
     appendRouteDebug(
       `Planner statico: fermate vicine=${plan.nearbyOriginStopsCount}, alternative destinazione=${plan.destinationAlternativesCount}, opzioni=${plan.options?.length || 0}.`
     );
 
-    const options = (plan.options || [])
+    let options = (plan.options || [])
       .map((item) => {
         const live = lastMergedEntities.find((entity) => entity.routeId === item.routeId && entity.tripId === item.tripId);
         return {
@@ -1489,35 +2364,127 @@ async function calculateRouteToSelectedStop() {
       })
       .filter((item) => item.boardStopLocation && item.destinationStopLocation);
 
+    options = await enrichOptionsWithWalkingRoutes(options, origin);
+    options = applyDestinationWalkMetrics(options, destinationPosition);
+
+    // Clean anti-change rule with guardrail:
+    // keep only direct rides when the best direct is not an excessive walk.
+    const directToExact = options
+      .filter((item) => item.transferCount === 0 && item.destinationStopId === stopId)
+      .sort((a, b) => (a.totalEffectiveSeconds || a.totalSeconds) - (b.totalEffectiveSeconds || b.totalSeconds));
+
+    if (directToExact.length > 0) {
+      const bestDirect = directToExact[0];
+      if ((bestDirect.totalWalkMeters || 0) <= DIRECT_ONLY_WALK_CAP_METERS) {
+        options = directToExact;
+        appendRouteDebug(`Filtro anti-cambi: mantenute dirette (walk totale ${bestDirect.totalWalkMeters}m).`);
+      } else {
+        appendRouteDebug(`Diretta disponibile ma con cammino alto (${bestDirect.totalWalkMeters}m): abilito confronto con opzioni secondarie.`);
+      }
+    } else {
+      const directOnly = options
+        .filter((item) => item.transferCount === 0)
+        .sort((a, b) => (a.totalEffectiveSeconds || a.totalSeconds) - (b.totalEffectiveSeconds || b.totalSeconds));
+      if (directOnly.length > 0 && (directOnly[0].totalWalkMeters || 0) <= DIRECT_ONLY_WALK_CAP_METERS) {
+        options = directOnly;
+        appendRouteDebug(`Nessuna diretta esatta: mantengo solo dirette senza cambio (${directOnly.length}).`);
+      }
+    }
+
+    options.sort((a, b) => {
+      if (a.transferCount !== b.transferCount) {
+        return a.transferCount - b.transferCount;
+      }
+      if ((a.totalEffectiveSeconds || a.totalSeconds) !== (b.totalEffectiveSeconds || b.totalSeconds)) {
+        return (a.totalEffectiveSeconds || a.totalSeconds) - (b.totalEffectiveSeconds || b.totalSeconds);
+      }
+      if ((a.totalWalkMeters || a.walkDistanceMeters) !== (b.totalWalkMeters || b.walkDistanceMeters)) {
+        return (a.totalWalkMeters || a.walkDistanceMeters) - (b.totalWalkMeters || b.walkDistanceMeters);
+      }
+      return a.boardEtaSeconds - b.boardEtaSeconds;
+    });
+    appendRouteDebug(`Percorsi a piedi ricalcolati con routing reale (${options.length} opzioni).`);
+
+    let secondaryOptions = [];
+    if (options.length) {
+      try {
+        const secondaryPlan = await requestStaticPlan({
+          origin,
+          destinationStopId: stopId,
+          destinationPoint: destinationPosition,
+          maxWalkMeters: MAX_WALK_METERS_FALLBACK,
+          destinationRadiusMeters: DESTINATION_ALTERNATIVE_RADIUS_METERS,
+          maxLookAheadSeconds: MAX_FUTURE_LOOKAHEAD_SECONDS,
+          allowTransfers: true,
+          maxTransfers: 1,
+          includeSecondaryTransfers: true
+        });
+
+        const secondaryBase = (secondaryPlan.options || [])
+          .filter((item) => item.transferCount > 0 && item.destinationStopId === stopId)
+          .map((item) => ({
+            ...item,
+            boardStopLocation: stopLocationById.get(item.boardStopId),
+            transferStopLocation: item.transferStopId ? stopLocationById.get(item.transferStopId) : null,
+            destinationStopLocation: stopLocationById.get(item.destinationStopId)
+          }))
+          .filter((item) => item.boardStopLocation && item.destinationStopLocation);
+
+        const secondaryEnriched = applyDestinationWalkMetrics(
+          await enrichOptionsWithWalkingRoutes(secondaryBase, origin),
+          destinationPosition
+        );
+        const bestPrimary = options[0];
+        const maxSecondaryTotalSeconds = (bestPrimary?.totalEffectiveSeconds || bestPrimary?.totalSeconds || 0) + SECONDARY_MAX_EXTRA_SECONDS;
+
+        secondaryOptions = secondaryEnriched
+          .filter((item) => (bestPrimary.totalWalkMeters - item.totalWalkMeters) >= SECONDARY_MIN_WALK_GAIN_METERS)
+          .filter((item) => (item.totalEffectiveSeconds || item.totalSeconds) <= maxSecondaryTotalSeconds)
+          .sort((a, b) => a.totalWalkMeters - b.totalWalkMeters || (a.totalEffectiveSeconds || a.totalSeconds) - (b.totalEffectiveSeconds || b.totalSeconds))
+          .slice(0, 6);
+
+        appendRouteDebug(`Opzioni secondarie calcolate: ${secondaryOptions.length} (meno cammino con cambio).`);
+      } catch (error) {
+        appendRouteDebug(`Opzioni secondarie non disponibili: ${error.message}`);
+      }
+    }
+
     if (!options.length) {
       clearNavigationLayer();
       routeSteps.innerHTML = '';
-      renderRouteOptionCards([], null);
+      renderRouteOptionCards([], null, []);
       currentRouteOptions = [];
+      currentSecondaryRouteOptions = [];
       selectedRouteOptionKey = '';
       setRouteSummary('Nessun bus compatibile trovato ora per questa destinazione. Prova a cambiare fermata o riprovare tra poco.');
       return;
     }
 
-    currentRouteOptions = options;
+    currentSecondaryRouteOptions = secondaryOptions;
+    currentRouteOptions = [...options, ...secondaryOptions];
     const preservedSelection = selectedRouteOptionKey
-      ? options.find((item) => getRouteOptionKey(item) === selectedRouteOptionKey)
+      ? currentRouteOptions.find((item) => getRouteOptionKey(item) === selectedRouteOptionKey)
       : null;
     const best = preservedSelection || options[0];
     selectedRouteOptionKey = getRouteOptionKey(best);
 
     await renderBusRouteOnMap(best);
     renderBusRouteSteps(best);
-    renderRouteOptionCards(options, best);
+    renderRouteOptionCards(options, best, secondaryOptions);
     setRouteSummary(
-      `Percorso migliore: ${best.transferCount > 0 ? `linee ${best.routeId}→${best.transferRouteId}` : `linea ${best.routeId}`} (${best.vehicleId || 'n/d'}) · Partenza ${formatClockFromEta(best.boardEtaSeconds)} · Arrivo ${formatClockFromEta(best.destinationEtaSeconds)} · Totale ${formatDurationSeconds(best.totalSeconds)} · Salita a ${best.boardStopName}`
+      `Percorso migliore: ${best.transferCount > 0 ? `linee ${best.routeId}→${best.transferRouteId}` : `linea ${best.routeId}`} (${best.vehicleId || 'n/d'}) · Partenza ${formatClockFromEta(best.boardEtaSeconds)} · Arrivo ${formatClockFromEta(best.destinationEtaSeconds)} · Totale ${formatDurationSeconds(best.totalEffectiveSeconds || best.totalSeconds)} · Salita a ${best.boardStopName}`
     );
+    // Auto-collapse the search UI so the user can see the route on the map
+    setTimeout(() => {
+      if (typeof collapseSearchCard === 'function') collapseSearchCard();
+    }, 500);
   } catch (error) {
     appendRouteDebug(`Errore globale calcolo percorso: ${error.message}`);
     setRouteSummary(`Errore percorso: ${error.message}`);
-    routeSteps.innerHTML = '';
-    renderRouteOptionCards([], null);
+    if (routeSteps) routeSteps.innerHTML = '';
+    renderRouteOptionCards([], null, []);
     currentRouteOptions = [];
+    currentSecondaryRouteOptions = [];
     selectedRouteOptionKey = '';
   } finally {
     routingBusy = false;
@@ -1531,7 +2498,7 @@ function onGeolocationUpdate(position) {
     accuracy: position.coords.accuracy
   };
 
-  if (activeOriginMode !== 'manual') {
+  if (activeOriginMode !== 'manual' && activeOriginMode !== 'search') {
     activeOriginMode = 'gps';
   }
 
@@ -1570,9 +2537,9 @@ function startUserLocationWatch() {
 }
 
 function renderTripDetailsPlaceholder(text) {
-  tripDetailsSummary.textContent = text;
-  upcomingStops.innerHTML = '';
-  serviceCalendarText.textContent = '-';
+  if (tripDetailsSummary) tripDetailsSummary.textContent = text;
+  if (upcomingStops) upcomingStops.innerHTML = '';
+  if (serviceCalendarText) serviceCalendarText.textContent = '-';
 
   if (map && routeShapeLayer) {
     map.removeLayer(routeShapeLayer);
@@ -1617,22 +2584,24 @@ function renderTripDetails(data) {
   const route = data.routeId || 'n/d';
   const trip = data.tripId || 'n/d';
   const total = data.totalStops || 0;
-  tripDetailsSummary.textContent = `Linea ${route} · Trip ${trip} · Fermate totali: ${total}`;
+  if (tripDetailsSummary) tripDetailsSummary.textContent = `Linea ${route} · Trip ${trip} · Fermate totali: ${total}`;
 
-  if (Array.isArray(data.upcomingStops) && data.upcomingStops.length) {
-    upcomingStops.innerHTML = data.upcomingStops
-      .map((item) => `<li>${item.stopSequence}. ${item.stopName} — prev. ${item.arrivalTime} · stimato ${item.predictedArrivalTime}</li>`)
-      .join('');
-  } else {
-    upcomingStops.innerHTML = '<li>Nessuna fermata in arrivo disponibile</li>';
+  if (upcomingStops) {
+    if (Array.isArray(data.upcomingStops) && data.upcomingStops.length) {
+      upcomingStops.innerHTML = data.upcomingStops
+        .map((item) => `<li>${item.stopSequence}. ${item.stopName} — prev. ${item.arrivalTime} · stimato ${item.predictedArrivalTime}</li>`)
+        .join('');
+    } else {
+      upcomingStops.innerHTML = '<li>Nessuna fermata in arrivo disponibile</li>';
+    }
   }
 
-  serviceCalendarText.textContent = formatCalendarSummary(data.serviceSummary);
+  if (serviceCalendarText) serviceCalendarText.textContent = formatCalendarSummary(data.serviceSummary);
 
   if (Array.isArray(data.upcomingStops) && data.upcomingStops.length) {
     const candidateStopId = data.upcomingStops[0].stopId;
     if (!destinationPosition && candidateStopId && stopLocationById.has(candidateStopId)) {
-      destinationStopSelect.value = candidateStopId;
+      if (destinationStopSelect) destinationStopSelect.value = candidateStopId;
     }
   }
 
@@ -1720,10 +2689,12 @@ function updateMap(entities) {
 
     const existing = markerByTripId.get(key);
     if (!existing) {
-      const icon = createBusIcon(item.routeId);
+      const icon = createBusIcon(item.routeId, { simulated: item.isSimulated });
       const marker = L.marker([item.lat, item.lon], icon ? { icon } : undefined).addTo(map);
       marker.bindPopup(buildPopup(item));
-      marker.on('click', () => {
+      marker.on('click', (event) => {
+        suppressNextMapClick = true;
+        event?.originalEvent?.stopPropagation?.();
         handleMarkerSelection(item);
       });
       markerByTripId.set(key, {
@@ -1734,12 +2705,14 @@ function updateMap(entities) {
 
     existing.marker.setLatLng([item.lat, item.lon]);
     existing.marker.setPopupContent(buildPopup(item));
-    const icon = createBusIcon(item.routeId);
+    const icon = createBusIcon(item.routeId, { simulated: item.isSimulated });
     if (icon) {
       existing.marker.setIcon(icon);
     }
     existing.marker.off('click');
-    existing.marker.on('click', () => {
+    existing.marker.on('click', (event) => {
+      suppressNextMapClick = true;
+      event?.originalEvent?.stopPropagation?.();
       handleMarkerSelection(item);
     });
   }
@@ -1959,36 +2932,10 @@ function mergeTripAndPosition(trips, positionsByKey) {
   return merged.sort((a, b) => a.arrivalTime - b.arrivalTime);
 }
 
-function renderRows(items) {
-  if (!items.length) {
-    tableBody.innerHTML = '<tr><td colspan="7" class="placeholder">Nessun veicolo disponibile per la linea selezionata</td></tr>';
-    return;
-  }
-
-  tableBody.innerHTML = items
-    .map(
-      (item) => `
-      <tr>
-        <td>${item.vehicleId || 'n/d'}</td>
-        <td>${item.tripId || 'n/d'}</td>
-        <td>${formatStopName(item.stopId)}</td>
-        <td>${formatUnix(item.arrivalTime)}</td>
-        <td>${formatDelay(item.delay)}</td>
-        <td>${formatCoordinate(item.lat, item.lon)}</td>
-        <td>${formatSpeed(item.speed)}</td>
-      </tr>
-    `
-    )
-    .join('');
-}
-
-function renderStats(items, feedTs) {
-  vehiclesCount.textContent = String(items.length);
-  const totalDelay = items.reduce((acc, current) => acc + (Number.isNaN(current.delay) ? 0 : Math.max(current.delay, 0)), 0);
-  const average = items.length ? Math.round(totalDelay / items.length / 60) : 0;
-  avgDelay.textContent = `${average} min`;
-  feedTimestamp.textContent = formatUnix(feedTs);
-}
+// renderRows / renderStats / updateMapTitle — no-ops (UI elements removed)
+function renderRows() {}
+function renderStats() {}
+function updateMapTitle() {}
 
 function getAvailableRouteIds(items) {
   return [...new Set(items.map((item) => item.routeId).filter(Boolean))].sort(compareRouteIds);
@@ -2006,6 +2953,7 @@ function ensureSelectedRoute(availableRouteIds) {
 }
 
 function renderRouteSelector(availableRouteIds) {
+  if (!lineSelect) return;
   lineSelect.innerHTML = '';
 
   if (!availableRouteIds.length) {
@@ -2014,7 +2962,7 @@ function renderRouteSelector(availableRouteIds) {
     option.textContent = 'Nessuna linea disponibile';
     lineSelect.appendChild(option);
     lineSelect.disabled = true;
-    mapTitle.textContent = 'Mappa live';
+    renderLineFilterOptions([]);
     return;
   }
 
@@ -2030,29 +2978,12 @@ function renderRouteSelector(availableRouteIds) {
     lineSelect.appendChild(option);
   }
 
-  mapTitle.textContent = selectedRouteId ? `Mappa live linea ${selectedRouteId}` : 'Mappa live';
-}
-
-function updateMapTitle() {
-  if (showAllOnMap) {
-    mapTitle.textContent = 'Mappa live - tutte le linee';
-    return;
-  }
-
-  mapTitle.textContent = selectedRouteId ? `Mappa live linea ${selectedRouteId}` : 'Mappa live';
+  renderLineFilterOptions(availableRouteIds);
 }
 
 function renderSelectedRouteView() {
-  const filtered = selectedRouteId
-    ? lastMergedEntities.filter((item) => item.routeId === selectedRouteId)
-    : lastMergedEntities;
-
-  const mapEntities = showAllOnMap ? lastMergedEntities : filtered;
-
-  renderRows(filtered);
-  renderStats(filtered, lastFeedTimestamp);
-  updateMap(mapEntities);
-  updateMapTitle();
+  const filtered = getLineFilteredEntities(lastMergedEntities);
+  updateMap(filtered);
 }
 
 async function loadData() {
@@ -2113,11 +3044,20 @@ async function loadData() {
 
     const { entities: tripEntities, feedTs } = parseTripUpdates(tripUpdatesXml);
     const positionsByKey = parseVehiclePositions(vehiclePositionXml);
-    lastMergedEntities = mergeTripAndPosition(tripEntities, positionsByKey);
+    const merged = mergeTripAndPosition(tripEntities, positionsByKey);
+    const simulation = applyScheduledSimulation(merged);
+    lastMergedEntities = simulation.entities;
+    lastSimulatedCount = simulation.simulatedCount;
     lastFeedTimestamp = feedTs;
 
     const routeIds = [...new Set(lastMergedEntities.map((item) => item.routeId).filter(Boolean))];
     console.log(`[FEED] parsed ${tripEntities.length} tripUpdates, ${positionsByKey.size} vehiclePositions, merged ${lastMergedEntities.length} entities, routeIds: [${routeIds.sort(compareRouteIds).join(', ')}]`);
+    if (simulation.simulatedCount > 0) {
+      console.warn(`[SIM] ${simulation.simulatedCount} bus simulati attivi (segnale GPS assente)`);
+    }
+    if (simulation.switchedToLiveCount > 0) {
+      console.log(`[SIM] ${simulation.switchedToLiveCount} bus passati da simulato a segnale live`);
+    }
 
     const suspiciousPairs = [['20', '30'], ['20', '120'], ['06', '60']];
     for (const entity of lastMergedEntities) {
@@ -2184,7 +3124,8 @@ async function loadData() {
     }
     feedConsecutiveFailures = 0;
 
-    message.textContent = `Dati aggiornati alle ${new Date().toLocaleTimeString('it-IT')}`;
+    const simText = lastSimulatedCount > 0 ? ` · ${lastSimulatedCount} bus in simulazione` : '';
+    message.textContent = `Dati aggiornati alle ${new Date().toLocaleTimeString('it-IT')}${simText}`;
   } catch (error) {
     feedConsecutiveFailures++;
     const level = feedConsecutiveFailures >= 3 ? 'error' : 'warn';
@@ -2194,16 +3135,15 @@ async function loadData() {
     showFeedBanner(label, level);
 
     message.textContent = `Errore durante il recupero feed: ${error.message}`;
-    tableBody.innerHTML = '<tr><td colspan="7" class="placeholder">Impossibile leggere il feed in questo momento</td></tr>';
-    lineSelect.innerHTML = '<option value="">Errore feed</option>';
-    lineSelect.disabled = true;
-    mapTitle.textContent = 'Mappa live';
-    vehiclesCount.textContent = '-';
-    avgDelay.textContent = '-';
-    feedTimestamp.textContent = '-';
+    if (lineSelect) {
+      lineSelect.innerHTML = '<option value="">Errore feed</option>';
+      lineSelect.disabled = true;
+    }
     renderTripDetailsPlaceholder('Impossibile caricare i dettagli corsa in questo momento');
-    destinationStopSelect.innerHTML = '<option value="">Fermate non disponibili</option>';
-    destinationStopSelect.disabled = true;
+    if (destinationStopSelect) {
+      destinationStopSelect.innerHTML = '<option value="">Fermate non disponibili</option>';
+      destinationStopSelect.disabled = true;
+    }
   }
 }
 
@@ -2212,65 +3152,116 @@ function startAutoRefresh() {
   timer = setInterval(loadData, REFRESH_MS);
 }
 
-refreshBtn.addEventListener('click', () => {
-  loadData();
-});
+// ═══════════════════════════════════════════════════════════
+// UI State Orchestration — Zero-UI search card collapse/expand
+// ═══════════════════════════════════════════════════════════
 
-autoRefreshCheckbox.addEventListener('change', () => {
-  if (autoRefreshCheckbox.checked) {
-    startAutoRefresh();
-  } else {
-    clearInterval(timer);
+function collapseSearchCard() {
+  if (!searchCard) return;
+  searchCard.classList.add('is-collapsed');
+  if (editRouteBtn) editRouteBtn.hidden = false;
+}
+
+function expandSearchCard() {
+  if (!searchCard) return;
+  searchCard.classList.remove('is-collapsed');
+  if (editRouteBtn) editRouteBtn.hidden = true;
+}
+
+function showRouteSummary(text) {
+  if (routeSummaryWrap) routeSummaryWrap.hidden = false;
+  setRouteSummary(text);
+}
+
+// After a route is calculated, auto-collapse the card so the user sees the path
+function onRouteCalculated(summaryText) {
+  showRouteSummary(summaryText);
+  // Delay collapse slightly so the user sees the summary appear
+  setTimeout(collapseSearchCard, 600);
+}
+
+// ── Swap origin ↔ destination ──
+swapBtn?.addEventListener('click', () => {
+  const originVal = originSearchInput?.value || '';
+  const destVal = destinationSearchInput?.value || '';
+
+  if (originSearchInput) originSearchInput.value = destVal;
+  if (destinationSearchInput) destinationSearchInput.value = originVal;
+
+  // Swap positions
+  const tempOrigin = searchOriginPosition || manualPosition;
+  const tempDest = destinationPosition;
+
+  if (tempDest) {
+    searchOriginPosition = { lat: tempDest.lat, lon: tempDest.lon, accuracy: null };
+    manualPosition = null;
+    activeOriginMode = 'search';
+    updateUserMarker();
+  }
+
+  if (tempOrigin) {
+    destinationPosition = { lat: tempOrigin.lat, lon: tempOrigin.lon };
+    destinationSource = 'search';
+    syncDestinationFromMapPoint();
   }
 });
 
-lineSelect.addEventListener('change', () => {
-  selectedRouteId = lineSelect.value;
-  renderSelectedRouteView();
+// ── Edit route pill ──
+editRouteBtn?.addEventListener('click', () => {
+  expandSearchCard();
 });
 
-mapAllToggle.addEventListener('change', () => {
-  showAllOnMap = mapAllToggle.checked;
-  renderSelectedRouteView();
-});
-
-toggleSemafori?.addEventListener('change', async () => {
-  if (toggleSemafori.checked) {
-    await enableSemaforiLayer();
-    return;
-  }
-
-  disableSemaforiLayer();
-});
-
-locateBtn.addEventListener('click', () => {
+// ── GPS locate ──
+locateBtn?.addEventListener('click', () => {
+  searchOriginPosition = null;
+  manualPosition = null;
   activeOriginMode = 'gps';
   mapPickMode = null;
+  if (originSearchInput) originSearchInput.value = '';
+  hideSearchResults('origin');
   startUserLocationWatch();
 });
 
-pickFromMapBtn.addEventListener('click', () => {
-  initMap();
-  mapPickMode = 'origin';
-  setRouteSummary('Clicca un punto sulla mappa per impostare la posizione di partenza.');
+// ── Route calculation ──
+routeNowBtn?.addEventListener('click', async () => {
+  if (routeNowBtn) routeNowBtn.classList.add('is-loading');
+  await calculateRouteToSelectedStop();
+  if (routeNowBtn) routeNowBtn.classList.remove('is-loading');
 });
 
-pickDestinationFromMapBtn.addEventListener('click', () => {
-  initMap();
-  mapPickMode = 'destination';
-  setRouteSummary('Clicca un punto sulla mappa per impostare il punto di arrivo.');
+lineFilterSelect?.addEventListener('change', () => {
+  selectedLineFilter = lineFilterSelect.value || 'all';
+  renderSelectedRouteView();
 });
 
-routeNowBtn.addEventListener('click', () => {
-  calculateRouteToSelectedStop();
+basemapToggleBtn?.addEventListener('click', () => {
+  isSatelliteMode = !isSatelliteMode;
+  applyBasemapMode();
 });
 
-routeDebugToggle.addEventListener('change', () => {
-  routeDebugEnabled = routeDebugToggle.checked;
-  renderRouteDebug();
+startupAlertCloseBtn?.addEventListener('click', () => {
+  closeStartupAlertModal();
 });
 
-routeOptionsList.addEventListener('click', async (event) => {
+startupAlertModal?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  if (target.matches('[data-close-startup-alert="1"]')) {
+    closeStartupAlertModal();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && startupAlertModal && !startupAlertModal.hidden) {
+    closeStartupAlertModal();
+  }
+});
+
+// ── Route option card clicks ──
+routeOptionsList?.addEventListener('click', async (event) => {
   if (event.target.closest('.route-option-more > summary')) {
     return;
   }
@@ -2299,24 +3290,123 @@ routeOptionsList.addEventListener('click', async (event) => {
   );
 });
 
-destinationStopSelect.addEventListener('change', () => {
+// ── Destination stop select (hidden but used internally) ──
+destinationStopSelect?.addEventListener('change', () => {
   const selected = destinationStopSelect.value;
   const location = stopLocationById.get(selected);
   if (location) {
     destinationPosition = { lat: location.lat, lon: location.lon };
+    destinationSource = 'map';
     syncDestinationFromMapPoint();
   }
 
-  if (routeAutoRefresh.checked) {
+  if (routeAutoRefresh?.checked) {
     calculateRouteToSelectedStop();
   }
 });
 
-renderTripDetailsPlaceholder('Clicca su un bus nella mappa per vedere percorso completo, shape e calendario corsa');
-setRouteSummary('Posizione non rilevata. Usa GPS o scegli un punto dalla mappa.');
-syncDestinationFromMapPoint();
-renderRouteDebug();
-updateSemaforiZoomHint();
+// ── Geocode search inputs with debounce ──
+originSearchInput?.addEventListener('input', () => {
+  scheduleSearch('origin', originSearchInput.value || '');
+});
 
+destinationSearchInput?.addEventListener('input', () => {
+  scheduleSearch('destination', destinationSearchInput.value || '');
+});
+
+originSearchResults?.addEventListener('click', (event) => {
+  const button = event.target.closest('.geocode-result-item[data-target="origin"]');
+  if (!button) return;
+  const index = Number(button.getAttribute('data-index'));
+  const items = readRenderedSearchItems('origin');
+  applyOriginSearchSelection(items[index]);
+});
+
+destinationSearchResults?.addEventListener('click', (event) => {
+  const button = event.target.closest('.geocode-result-item[data-target="destination"]');
+  if (!button) return;
+  const index = Number(button.getAttribute('data-index'));
+  const items = readRenderedSearchItems('destination');
+  applyDestinationSearchSelection(items[index]);
+});
+
+// Close geocode dropdowns on outside click
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.input-field-wrap')) {
+    hideSearchResults('origin');
+    hideSearchResults('destination');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Mobile Bottom-Sheet Touch Drag
+// ═══════════════════════════════════════════════════════════
+
+if (sheetHandle && searchCard) {
+  let dragStartY = 0;
+  let isDragging = false;
+
+  sheetHandle.addEventListener('touchstart', (e) => {
+    dragStartY = e.touches[0].clientY;
+    isDragging = true;
+    searchCard.style.transition = 'none';
+  }, { passive: true });
+
+  sheetHandle.addEventListener('touchmove', (e) => {
+    if (!isDragging) return;
+    const deltaY = e.touches[0].clientY - dragStartY;
+    if (deltaY > 0) {
+      // Dragging down — offset the card
+      searchCard.style.transform = `translateY(${deltaY}px)`;
+    }
+  }, { passive: true });
+
+  sheetHandle.addEventListener('touchend', (e) => {
+    if (!isDragging) return;
+    isDragging = false;
+    searchCard.style.transition = '';
+    searchCard.style.transform = '';
+
+    const deltaY = (e.changedTouches?.[0]?.clientY || 0) - dragStartY;
+    if (deltaY > 80) {
+      collapseSearchCard();
+    } else if (deltaY < -40) {
+      expandSearchCard();
+    }
+  }, { passive: true });
+
+  // Tap the handle to toggle
+  sheetHandle.addEventListener('click', () => {
+    if (searchCard.classList.contains('is-collapsed')) {
+      expandSearchCard();
+    } else {
+      collapseSearchCard();
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Override: Auto-collapse after route calculation
+// ═══════════════════════════════════════════════════════════
+
+// Patch setRouteSummary to show summary wrap
+const _originalSetRouteSummary = setRouteSummary;
+// setRouteSummary is used as-is, but we hook into calculateRouteToSelectedStop's success path
+// by patching the point where route is rendered. We do this by intercepting renderBusRouteOnMap calls.
+
+// Patch: after renderBusRouteOnMap, collapse search card
+const _originalRenderBusRouteOnMap = renderBusRouteOnMap;
+// We can't reassign const, so we wrap via the existing flow.
+// Instead, we hook the routeNowBtn click to collapse after completion — already done above.
+
+// ═══════════════════════════════════════════════════════════
+// Initialization
+// ═══════════════════════════════════════════════════════════
+
+// Show all buses on map (Zero-UI: no line filtering)
+showAllOnMap = true;
+
+initMap();
+openStartupAlertModal();
 loadData();
 startAutoRefresh();

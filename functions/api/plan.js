@@ -9,6 +9,8 @@ import {
 
 const PLANNER_WALK_SPEED_MPS = 1.35;
 const PLANNER_MAX_RESULTS = 20;
+const WALK_RADIUS_STEP = 1000;
+const WALK_RADIUS_MAX = 5000;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -67,17 +69,23 @@ export async function onRequestGet(context) {
 
     const destinationSet = new Set(destinationAlternatives);
 
-    const nearbyOriginStops = Object.entries(gtfs.stopLocationsById)
+    // Pre-compute all stop distances once, sorted by proximity
+    const allOriginStopsByDistance = Object.entries(gtfs.stopLocationsById)
       .map(([stopId, location]) => ({
         stopId,
         location,
         walkDistanceMeters: haversineMeters(originLat, originLon, location.lat, location.lon)
       }))
-      .filter((item) => item.walkDistanceMeters <= maxWalkMeters)
       .sort((a, b) => a.walkDistanceMeters - b.walkDistanceMeters);
 
     const candidates = [];
     const transferCandidates = [];
+
+    // ── Progressive walk radius search ─────────────────────────
+    // Start at maxWalkMeters (500m default), expand to 1km then +1km
+    // until results found. Hard cap at WALK_RADIUS_MAX (5km).
+    let effectiveWalkRadius = maxWalkMeters;
+    let searchedUpToRadius = 0;
 
     const makeDirectCandidate = (originStop, trip, board, destination, boardIndex, destinationIndex) => {
       const boardSeconds = parseGtfsTimeToSeconds(board.departureTime || board.arrivalTime);
@@ -166,7 +174,12 @@ export async function onRequestGet(context) {
       return destinationCandidates[0].index;
     };
 
-    for (const originStop of nearbyOriginStops) {
+    while (true) {
+    const bandStops = allOriginStopsByDistance.filter(
+      (s) => s.walkDistanceMeters > searchedUpToRadius && s.walkDistanceMeters <= effectiveWalkRadius
+    );
+
+    for (const originStop of bandStops) {
       const servicesFromStop = gtfs.stopTimesByStopId.get(originStop.stopId) || [];
       for (const service of servicesFromStop) {
         const trip = gtfs.tripsByTripId.get(service.tripId);
@@ -202,7 +215,7 @@ export async function onRequestGet(context) {
           candidates.push(directCandidate);
         }
 
-        if (!allowTransfers || maxTransfers < 1) {
+        if (!allowTransfers || maxTransfers < 1 || transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
           continue;
         }
 
@@ -344,30 +357,120 @@ export async function onRequestGet(context) {
             break;
           }
         }
+      }
+    }
 
-        if (transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
-          break;
+    // Check if we found candidates in this radius band
+    if (candidates.length > 0 || transferCandidates.length > 0) {
+      break;
+    }
+    if (effectiveWalkRadius >= WALK_RADIUS_MAX) {
+      break;
+    }
+    searchedUpToRadius = effectiveWalkRadius;
+    if (effectiveWalkRadius < 1000) {
+      effectiveWalkRadius = 1000;
+    } else {
+      effectiveWalkRadius = Math.min(effectiveWalkRadius + WALK_RADIUS_STEP, WALK_RADIUS_MAX);
+    }
+    } // end progressive radius while-loop
+
+    const nearbyOriginStops = allOriginStopsByDistance.filter(
+      (s) => s.walkDistanceMeters <= effectiveWalkRadius
+    );
+
+    // Suppress useless transfers: don't suggest transferring to a route
+    // the user could have boarded directly (Google Maps style)
+    const directRouteIds = new Set(candidates.map(c => c.routeId));
+    if (allowTransfers && maxTransfers > 0 && transferCandidates.length) {
+      for (const tc of transferCandidates) {
+        if (!directRouteIds.has(tc.transferRouteId)) {
+          candidates.push(tc);
         }
       }
+    }
 
-      if (transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
-        break;
+    // ── TIER 1: Trip-level dedup ──────────────────────────────────
+    // Same physical bus passes through multiple nearby origin stops.
+    // Keep only the closest walk for each (tripId, destinationStopId).
+    // Store other boarding stops as alternativeBoardingStops.
+    const tripMap = new Map();
+    for (const c of candidates) {
+      const tKey = `${c.tripId}__${c.destinationStopId}`;
+      const existing = tripMap.get(tKey);
+      if (!existing) {
+        c.alternativeBoardingStops = [];
+        tripMap.set(tKey, c);
+      } else if (c.walkDistanceMeters < existing.walkDistanceMeters) {
+        existing.alternativeBoardingStops.push({
+          stopId: existing.boardStopId,
+          stopName: existing.boardStopName,
+          walkDistanceMeters: existing.walkDistanceMeters
+        });
+        c.alternativeBoardingStops = existing.alternativeBoardingStops;
+        tripMap.set(tKey, c);
+      } else {
+        existing.alternativeBoardingStops.push({
+          stopId: c.boardStopId,
+          stopName: c.boardStopName,
+          walkDistanceMeters: c.walkDistanceMeters
+        });
       }
     }
+    const tripDeduped = [...tripMap.values()];
 
-    if (allowTransfers && maxTransfers > 0 && transferCandidates.length) {
-      candidates.push(...transferCandidates);
+    // ── TIER 1.5: Route-level dedup across nearby stops ───────────
+    // Same routeId to same destination from different nearby stops.
+    // Keep closest walk, merge boarding alternatives.
+    const routeMap = new Map();
+    for (const c of tripDeduped) {
+      if (c.transferCount > 0) { continue; }
+      const rKey = `${c.routeId}__${c.destinationStopId}`;
+      const existing = routeMap.get(rKey);
+      if (!existing) {
+        routeMap.set(rKey, c);
+      } else if (c.walkDistanceMeters < existing.walkDistanceMeters) {
+        c.alternativeBoardingStops = c.alternativeBoardingStops || [];
+        c.alternativeBoardingStops.push({
+          stopId: existing.boardStopId,
+          stopName: existing.boardStopName,
+          walkDistanceMeters: existing.walkDistanceMeters
+        });
+        for (const alt of (existing.alternativeBoardingStops || [])) {
+          if (!c.alternativeBoardingStops.some(a => a.stopId === alt.stopId)) {
+            c.alternativeBoardingStops.push(alt);
+          }
+        }
+        routeMap.set(rKey, c);
+      } else {
+        existing.alternativeBoardingStops = existing.alternativeBoardingStops || [];
+        existing.alternativeBoardingStops.push({
+          stopId: c.boardStopId,
+          stopName: c.boardStopName,
+          walkDistanceMeters: c.walkDistanceMeters
+        });
+        for (const alt of (c.alternativeBoardingStops || [])) {
+          if (!existing.alternativeBoardingStops.some(a => a.stopId === alt.stopId)) {
+            existing.alternativeBoardingStops.push(alt);
+          }
+        }
+      }
     }
+    const routeDeduped = [
+      ...routeMap.values(),
+      ...tripDeduped.filter(c => c.transferCount > 0)
+    ];
 
-    candidates.sort((a, b) => {
+    // ── Sort: walk distance first (within transfer tier) ─────────
+    routeDeduped.sort((a, b) => {
       if (a.transferCount !== b.transferCount) {
         return a.transferCount - b.transferCount;
       }
-      if (a.totalSeconds !== b.totalSeconds) {
-        return a.totalSeconds - b.totalSeconds;
-      }
       if (a.walkDistanceMeters !== b.walkDistanceMeters) {
         return a.walkDistanceMeters - b.walkDistanceMeters;
+      }
+      if (a.totalSeconds !== b.totalSeconds) {
+        return a.totalSeconds - b.totalSeconds;
       }
       if (a.boardEtaSeconds !== b.boardEtaSeconds) {
         return a.boardEtaSeconds - b.boardEtaSeconds;
@@ -375,33 +478,60 @@ export async function onRequestGet(context) {
       return a.stopsToTravel - b.stopsToTravel;
     });
 
+    // ── TIER 2: Route + time-bucket dedup ────────────────────────
+    // Same route from same stop in same 3-min window → keep first.
     const deduped = [];
     const seen = new Set();
-    const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
-    for (const option of candidates) {
+    const DEDUP_BUCKET_SECONDS = 180;
+    for (const option of routeDeduped) {
       const roundedDepartureBucket = Math.floor((option.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
-      const roundedTransferBucket = Math.floor((option.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
       const roundedArrivalBucket = Math.floor((option.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
-      const roundedTotalBucket = Math.floor((option.totalSeconds || 0) / DEDUP_BUCKET_SECONDS);
       const key = [
         option.routeId,
         option.transferRouteId || '',
         option.boardStopId,
         option.destinationStopId,
         roundedDepartureBucket,
-        roundedTransferBucket,
-        roundedArrivalBucket,
-        roundedTotalBucket
+        roundedArrivalBucket
       ].join('__');
       if (seen.has(key)) {
         continue;
       }
       seen.add(key);
       deduped.push(option);
-      if (deduped.length >= PLANNER_MAX_RESULTS) {
-        break;
+    }
+
+    // ── TIER 3: Segment grouping — Google Maps style ─────────────
+    // Same boardStop + destinationStop = one card, multiple route pills.
+    const grouped = [];
+    const segmentMap = new Map();
+    for (const option of deduped) {
+      if (option.transferCount > 0) {
+        option.alternativeRoutes = option.alternativeRoutes || [];
+        grouped.push(option);
+        continue;
+      }
+      const segKey = `${option.boardStopId}__${option.destinationStopId}`;
+      const existing = segmentMap.get(segKey);
+      if (existing) {
+        if (existing.routeId !== option.routeId &&
+            !existing.alternativeRoutes.some(a => a.routeId === option.routeId)) {
+          existing.alternativeRoutes.push({
+            routeId: option.routeId,
+            tripId: option.tripId,
+            boardEtaSeconds: option.boardEtaSeconds,
+            totalSeconds: option.totalSeconds,
+            tripHeadsign: option.tripHeadsign
+          });
+        }
+      } else {
+        option.alternativeRoutes = option.alternativeRoutes || [];
+        segmentMap.set(segKey, option);
+        grouped.push(option);
       }
     }
+
+    const finalOptions = grouped.slice(0, PLANNER_MAX_RESULTS);
 
     return json({
       origin: { lat: originLat, lon: originLon },
@@ -409,10 +539,11 @@ export async function onRequestGet(context) {
       destinationAlternativesCount: destinationAlternatives.length,
       nearbyOriginStopsCount: nearbyOriginStops.length,
       maxWalkMeters,
+      effectiveWalkRadius,
       maxLookAheadSeconds,
       allowTransfers,
       maxTransfers,
-      options: deduped
+      options: finalOptions
     });
   } catch (error) {
     return json({ error: `Errore server: ${error.message}` }, 500);

@@ -1,9 +1,14 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="it">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MUVT AMTAB Bari - Monitor Live</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>MUVT â€” Trasporto Pubblico Bari</title>
+    <meta name="description" content="Traccia autobus AMTAB in tempo reale sulla mappa di Bari. Calcola percorsi, orari e fermate." />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -13,133 +18,130 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="container">
-      <div id="feedBanner" class="feed-banner" hidden>
-        <span id="feedBannerText"></span>
-        <button id="feedBannerDismiss" type="button" aria-label="Chiudi">&times;</button>
+
+    <!-- â•â•â• FULL-SCREEN MAP â•â•â• -->
+    <div id="map"></div>
+
+    <!-- â•â•â• FEED STATUS TOAST â•â•â• -->
+    <div id="feedBanner" class="feed-toast" hidden>
+      <span id="feedBannerText"></span>
+      <button id="feedBannerDismiss" type="button" aria-label="Chiudi">Ã—</button>
+    </div>
+
+    <!-- ═══ STARTUP ALERT MODAL ═══ -->
+    <div id="startupAlertModal" class="startup-alert-modal" hidden>
+      <div class="startup-alert-modal__backdrop" data-close-startup-alert="1"></div>
+      <div class="startup-alert-modal__panel" role="dialog" aria-modal="true" aria-label="Avviso AMTAB / AMTAB Notice">
+        <button id="startupAlertCloseBtn" class="startup-alert-modal__close" type="button" aria-label="Chiudi / Close">×</button>
+        <div class="alert-content">
+          <h3>⚠️ Attenzione: Variazione Capolinea</h3>
+          <p>A causa dei lavori di riqualificazione presso la Stazione di Bari Centrale, i capolinea di alcune linee potrebbero subire variazioni temporanee. Si raccomanda di verificare sempre la destinazione finale indicata sul veicolo.</p>
+          
+          <h3 style="margin-top: 1rem;">⚠️ Warning: Terminus Relocation</h3>
+          <p>Due to ongoing redevelopment work at Bari Centrale Station, the terminuses for several bus lines have been temporarily relocated. Please always check the final destination displayed on the vehicle.</p>
+          
+          <a href="https://www.amtab.it/it/140-news-chatbot/3349-differimento-capolinea-e-fermate-lavori-di-riqualificazione-della-stazione-bari-centrale" target="_blank" class="amtab-link">
+            Consulta gli avvisi ufficiali AMTAB / Official AMTAB Notices ↗
+          </a>
+        </div>
+      </div>
+    </div>
+    <!-- â•â•â• FLOATING MAP CONTROLS â•â•â• -->
+    <div class="floating-controls">
+      <label class="line-filter-pill" for="lineFilterSelect" aria-label="Filtro linea bus">
+        <span class="line-filter-pill__label">Linea</span>
+        <select id="lineFilterSelect">
+          <option value="all">Tutte</option>
+        </select>
+      </label>
+    </div>
+
+    <button id="basemapToggleBtn" class="basemap-toggle" type="button" aria-label="Cambia mappa" title="Cambia mappa">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"></path>
+      </svg>
+    </button>
+    <!-- â•â•â• FLOATING SEARCH CARD â•â•â• -->
+    <div id="searchCard" class="search-card">
+      <!-- Drag handle for mobile bottom-sheet -->
+      <div class="search-card__handle" id="sheetHandle">
+        <span class="search-card__handle-bar"></span>
       </div>
 
-      <header class="header">
-        <h1>MUVT AMTAB Bari</h1>
-        <p class="subtitle">Monitor in diretta dal feed GTFS-RT</p>
-      </header>
+      <div class="search-card__header">
+        <h1 class="search-card__brand">MUVT</h1>
+        <span class="search-card__subtitle">Bari</span>
+      </div>
 
-      <section class="controls">
-        <label class="line-select-wrap" for="lineSelect">
-          Linea
-          <select id="lineSelect"></select>
-        </label>
-        <label class="auto-refresh">
-          <input id="mapAllToggle" type="checkbox" />
-          Mostra tutti i pullman sulla mappa
-        </label>
-        <button id="refreshBtn" type="button">Aggiorna ora</button>
-        <label class="auto-refresh">
-          <input id="autoRefresh" type="checkbox" checked />
-          Aggiornamento automatico (15s)
-        </label>
-        <label class="toggle-control">
-          <input type="checkbox" id="toggleSemafori" /> 🚦 Mostra Semafori
-        </label>
-        <small id="semaforiDisclaimer" class="semafori-disclaimer">
-          ⚠️ Stato semafori simulato — nessuna API real-time disponibile. Posizioni reali da Open Data Comune di Bari (CC0).
-        </small>
-        <small id="semaforiZoomHint" class="semafori-zoom-hint"></small>
-      </section>
+      <div class="search-card__body" id="searchCardBody">
+        <div class="search-card__inputs">
+          <!-- Origin -->
+          <div class="input-row">
+            <div class="input-dot input-dot--origin"></div>
+            <div class="input-field-wrap">
+              <input
+                id="originSearchInput"
+                type="text"
+                placeholder="Partenza"
+                autocomplete="off"
+                aria-label="Indirizzo di partenza"
+              />
+              <button id="locateBtn" class="input-action-btn" type="button" aria-label="Usa posizione GPS" title="Usa la mia posizione">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+              </button>
+              <div id="originSearchResults" class="geocode-results" hidden></div>
+            </div>
+          </div>
 
-      <section class="status-cards">
-        <article class="card">
-          <h2>Veicoli monitorati</h2>
-          <p id="vehiclesCount">-</p>
-        </article>
-        <article class="card">
-          <h2>Media ritardo</h2>
-          <p id="avgDelay">-</p>
-        </article>
-        <article class="card">
-          <h2>Ultimo aggiornamento feed</h2>
-          <p id="feedTimestamp">-</p>
-        </article>
-      </section>
+          <!-- Swap button -->
+          <button id="swapBtn" class="swap-btn" type="button" aria-label="Inverti partenza e arrivo" title="Inverti">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+          </button>
 
-      <section class="map-wrap">
-        <h2 id="mapTitle">Mappa live</h2>
-        <div id="map"></div>
-      </section>
-
-      <section class="details-wrap" id="tripDetailsPanel">
-        <h2>Dettagli corsa selezionata</h2>
-        <p id="tripDetailsSummary" class="subtitle">Clicca su un bus nella mappa per vedere percorso completo, prossime fermate e calendario servizio.</p>
-        <div class="details-grid">
-          <article class="card">
-            <h3>Prossime fermate</h3>
-            <ul id="upcomingStops" class="details-list"></ul>
-          </article>
-          <article class="card">
-            <h3>Calendario corsa</h3>
-            <p id="serviceCalendarText" class="details-text">-</p>
-          </article>
+          <!-- Destination -->
+          <div class="input-row">
+            <div class="input-dot input-dot--dest"></div>
+            <div class="input-field-wrap">
+              <input
+                id="destinationSearchInput"
+                type="text"
+                placeholder="Destinazione"
+                autocomplete="off"
+                aria-label="Indirizzo di arrivo"
+              />
+              <div id="destinationSearchResults" class="geocode-results" hidden></div>
+            </div>
+          </div>
         </div>
-      </section>
 
-      <section class="details-wrap" id="routingPanel">
-        <h2>Ricerca percorso (tempo reale)</h2>
-        <p class="subtitle">Ricerca del percorso migliore dalla tua posizione (GPS o manuale) al punto di arrivo scelto su mappa.</p>
-        <div class="routing-controls">
-          <button id="locateBtn" type="button">Usa la mia posizione</button>
-          <button id="pickFromMapBtn" type="button">Scegli partenza dalla mappa</button>
-          <button id="pickDestinationFromMapBtn" type="button">Scegli arrivo dalla mappa</button>
-          <label class="line-select-wrap" for="destinationStopSelect">
-            Fermata arrivo associata
-            <select id="destinationStopSelect"></select>
-          </label>
-          <button id="routeNowBtn" type="button">Calcola percorso</button>
-          <label class="auto-refresh">
-            <input id="allowTransfers" type="checkbox" checked />
-            Consenti cambi
-          </label>
-          <label class="auto-refresh">
-            <input id="routeAutoRefresh" type="checkbox" checked />
-            Aggiorna percorso live
-          </label>
-          <label class="auto-refresh">
-            <input id="routeDebugToggle" type="checkbox" checked />
-            Debug routing
-          </label>
+        <!-- Route action -->
+        <button id="routeNowBtn" class="route-btn" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          Calcola percorso
+        </button>
+
+        <!-- Route summary (appears after route calc) -->
+        <div id="routeSummaryWrap" class="route-summary" hidden>
+          <p id="routeSummaryText" class="route-summary__text"></p>
+          <div id="routeOptionsList" class="route-options"></div>
         </div>
-        <p id="mapDestinationText" class="details-text">Arrivo non impostato. Clicca “Scegli arrivo dalla mappa”.</p>
-        <p id="routeSummaryText" class="details-text">Posizione non rilevata.</p>
-        <ol id="routeSteps" class="details-list"></ol>
-        <div id="routeOptionsList" class="route-options"></div>
-        <div class="debug-wrap">
-          <h3>Debug percorso</h3>
-          <pre id="routeDebugOutput" class="debug-output">Debug attivo.</pre>
-        </div>
-      </section>
+      </div>
+    </div>
 
-      <section class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Veicolo</th>
-              <th>Trip ID</th>
-              <th>Fermata</th>
-              <th>Arrivo previsto</th>
-              <th>Ritardo</th>
-              <th>Posizione</th>
-              <th>Velocità</th>
-            </tr>
-          </thead>
-          <tbody id="tableBody">
-            <tr>
-              <td colspan="7" class="placeholder">Caricamento dati...</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+    <!-- â•â•â• MINIMIZED ROUTE PILL (visible after route collapse) â•â•â• -->
+    <button id="editRouteBtn" class="edit-route-pill" type="button" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      Modifica percorso
+    </button>
 
-      <p id="message" class="message"></p>
-    </main>
+    <!-- â•â•â• HIDDEN INTERNAL STATE ELEMENTS (preserved for app.js logic) â•â•â• -->
+    <select id="lineSelect" class="sr-only" aria-hidden="true"></select>
+    <select id="destinationStopSelect" class="sr-only" aria-hidden="true"></select>
+    <input id="allowTransfers" type="checkbox" checked class="sr-only" aria-hidden="true" />
+    <input id="routeAutoRefresh" type="checkbox" checked class="sr-only" aria-hidden="true" />
+    <span id="mapDestinationText" class="sr-only" aria-hidden="true"></span>
+    <span id="message" class="sr-only" aria-hidden="true"></span>
 
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -148,4 +150,4 @@
     ></script>
     <script src="app.js" type="module"></script>
   </body>
-  </html>
+</html>

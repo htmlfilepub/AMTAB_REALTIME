@@ -24,7 +24,8 @@ export async function requestStaticPlan({
   destinationRadiusMeters,
   maxLookAheadSeconds,
   allowTransfers,
-  maxTransfers
+  maxTransfers,
+  includeSecondaryTransfers
 }) {
   const params = new URLSearchParams({
     originLat: String(origin.lat),
@@ -46,6 +47,10 @@ export async function requestStaticPlan({
 
   if (maxTransfers != null) {
     params.set('maxTransfers', String(maxTransfers));
+  }
+
+  if (includeSecondaryTransfers != null) {
+    params.set('includeSecondaryTransfers', includeSecondaryTransfers ? '1' : '0');
   }
 
   let lastError = null;

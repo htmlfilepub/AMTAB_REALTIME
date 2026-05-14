@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import AdmZip from 'adm-zip';
 import { calculateTrafficLightState } from './public/traffic-lights.js';
+import { classifyBus } from './functions/api/anti-ghost.js';
 
 const PORT = process.env.PORT || 3000;
 const FEED_URL = 'https://avl.amtab.it/WSExportGTFS_RT/api/gtfs/TripUpdates';
@@ -16,6 +17,11 @@ const SEMAFORI_CACHE_MS = 24 * 60 * 60 * 1000;
 const NOMINATIM_DELAY_MS = 1100;
 const PLANNER_WALK_SPEED_MPS = 1.35;
 const PLANNER_MAX_RESULTS = 20;
+const WALK_RADIUS_STEP = 1000;
+const WALK_RADIUS_MAX = 5000;
+const MISSED_BUS_GRACE_SECONDS = 75;
+const TRANSFER_MIN_GAIN_SECONDS = 6 * 60;
+const DIRECT_WALK_HARD_CAP_METERS = 1500;
 
 const gtfsCache = {
   expiresAt: 0,
@@ -659,7 +665,8 @@ function toFutureDeltaFromGtfsSeconds(targetSeconds, nowSeconds, maxLookAheadSec
   }
 
   const delta = targetSeconds - nowSeconds;
-  if (delta < -1800) {
+  // Bus already departed beyond small tolerance: not boardable.
+  if (delta < -MISSED_BUS_GRACE_SECONDS) {
     return NaN;
   }
 
@@ -869,6 +876,43 @@ async function serveStatic(res, routePath) {
   }
 }
 
+/**
+ * Parsing minimale del feed XML VehiclePosition per l'endpoint filtrato.
+ * Estrae i campi essenziali da ogni FeedEntity senza dipendenze DOM esterne.
+ */
+function parseVehiclePositionXml(xml) {
+  const vehicles = [];
+  const entityPattern = /<FeedEntity>([\s\S]*?)<\/FeedEntity>/g;
+  let match;
+
+  while ((match = entityPattern.exec(xml)) !== null) {
+    const block = match[1];
+    const get = (tag) => {
+      const m = block.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
+      return m ? m[1].trim() : '';
+    };
+
+    const lat = Number(get('Latitude'));
+    const lon = Number(get('Longitude'));
+    const speed = Number(get('Speed'));
+
+    vehicles.push({
+      vehicleId: get('Id'),
+      routeId: get('RouteId'),
+      tripId: get('TripId'),
+      lat: Number.isNaN(lat) ? null : lat,
+      lon: Number.isNaN(lon) ? null : lon,
+      speed: Number.isNaN(speed) ? 0 : speed,
+      bearing: Number(get('Bearing')) || 0,
+      stopId: get('StopId'),
+      currentStatus: get('CurrentStatus'),
+      timestamp: Number(get('Timestamp')) || 0
+    });
+  }
+
+  return vehicles;
+}
+
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host}`);
@@ -904,6 +948,90 @@ const server = createServer(async (req, res) => {
 
       const xml = await upstream.text();
       send(res, 200, xml, 'application/xml; charset=utf-8');
+      return;
+    }
+
+    // ── API Anti-Fantasma: posizioni veicoli filtrate ─────────────
+    // Restituisce le posizioni in JSON con classificazione anti-ghost.
+    // Query params opzionali:
+    //   ?ghostFilter=1  → esclude bus fantasma dalla risposta
+    //   ?includeDetails=1 → include dettagli di classificazione
+    if (requestUrl.pathname === '/api/vehicleposition/filtered') {
+      const ghostFilter = requestUrl.searchParams.get('ghostFilter') !== '0';
+      const includeDetails = requestUrl.searchParams.get('includeDetails') === '1';
+
+      const upstream = await fetch(VEHICLE_FEED_URL, {
+        headers: { Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8' }
+      });
+
+      if (!upstream.ok) {
+        send(res, upstream.status, `Errore feed remoto: ${upstream.status}`);
+        return;
+      }
+
+      const xml = await upstream.text();
+
+      // Parse XML per estrarre i dati dei veicoli
+      const vehicles = parseVehiclePositionXml(xml);
+
+      // Carica dati GTFS statici (già in cache dopo il primo caricamento)
+      let gtfs = null;
+      try {
+        gtfs = await loadGtfsData();
+      } catch {
+        // Se GTFS non disponibile, restituisci i veicoli senza filtro
+        send(res, 200, JSON.stringify({
+          filtered: false,
+          reason: 'GTFS statico non disponibile',
+          vehicles
+        }), 'application/json; charset=utf-8');
+        return;
+      }
+
+      // Classifica ogni veicolo con i filtri anti-fantasma
+      const classified = vehicles.map((v) => {
+        const classification = classifyBus({
+          vehicleId: v.vehicleId,
+          routeId: v.routeId,
+          tripId: v.tripId,
+          lat: v.lat,
+          lon: v.lon,
+          speed: v.speed
+        }, gtfs);
+
+        const entry = {
+          ...v,
+          isGhost: classification.isGhost,
+          isInDepot: classification.isInDepot,
+          isOutOfService: classification.isOutOfService,
+          shouldDisplay: classification.shouldDisplay
+        };
+
+        if (classification.isInDepot) {
+          entry.status = 'IN_DEPOT';
+        }
+
+        if (includeDetails) {
+          entry.antiGhostDetails = classification.details;
+        }
+
+        return entry;
+      });
+
+      const result = ghostFilter
+        ? classified.filter((v) => v.shouldDisplay)
+        : classified;
+
+      const payload = {
+        filtered: true,
+        ghostFilter,
+        totalVehicles: vehicles.length,
+        displayedVehicles: result.length,
+        hiddenVehicles: vehicles.length - result.length,
+        vehicles: result
+      };
+
+      send(res, 200, JSON.stringify(payload), 'application/json; charset=utf-8');
       return;
     }
 
@@ -1065,6 +1193,7 @@ const server = createServer(async (req, res) => {
       const maxLookAheadSeconds = Number(requestUrl.searchParams.get('maxLookAheadSeconds') || 5400);
       const allowTransfers = (requestUrl.searchParams.get('allowTransfers') || '0') === '1';
       const maxTransfers = Math.max(0, Math.min(1, Number(requestUrl.searchParams.get('maxTransfers') || 0)));
+      const includeSecondaryTransfers = (requestUrl.searchParams.get('includeSecondaryTransfers') || '0') === '1';
       const serviceDateYmd = requestUrl.searchParams.get('serviceDate') || getYmd(new Date());
 
       if (Number.isNaN(originLat) || Number.isNaN(originLon) || !destinationStopId) {
@@ -1105,17 +1234,23 @@ const server = createServer(async (req, res) => {
 
       const destinationSet = new Set(destinationAlternatives);
 
-      const nearbyOriginStops = Object.entries(gtfs.stopLocationsById)
+      // Pre-compute all stop distances once, sorted by proximity
+      const allOriginStopsByDistance = Object.entries(gtfs.stopLocationsById)
         .map(([stopId, location]) => ({
           stopId,
           location,
           walkDistanceMeters: haversineMeters(originLat, originLon, location.lat, location.lon)
         }))
-        .filter((item) => item.walkDistanceMeters <= maxWalkMeters)
         .sort((a, b) => a.walkDistanceMeters - b.walkDistanceMeters);
 
       const candidates = [];
       const transferCandidates = [];
+
+      // ── Progressive walk radius search ─────────────────────────
+      // Start at maxWalkMeters (500m default), expand to 1km then +1km
+      // until results found. Hard cap at WALK_RADIUS_MAX (5km).
+      let effectiveWalkRadius = maxWalkMeters;
+      let searchedUpToRadius = 0;
 
       const makeDirectCandidate = (originStop, trip, board, destination, boardIndex, destinationIndex) => {
         const boardSeconds = parseGtfsTimeToSeconds(board.departureTime || board.arrivalTime);
@@ -1204,7 +1339,12 @@ const server = createServer(async (req, res) => {
         return destinationCandidates[0].index;
       };
 
-      for (const originStop of nearbyOriginStops) {
+      while (true) {
+      const bandStops = allOriginStopsByDistance.filter(
+        (s) => s.walkDistanceMeters > searchedUpToRadius && s.walkDistanceMeters <= effectiveWalkRadius
+      );
+
+      for (const originStop of bandStops) {
         const servicesFromStop = gtfs.stopTimesByStopId.get(originStop.stopId) || [];
         for (const service of servicesFromStop) {
           const trip = gtfs.tripsByTripId.get(service.tripId);
@@ -1240,7 +1380,7 @@ const server = createServer(async (req, res) => {
             candidates.push(directCandidate);
           }
 
-          if (!allowTransfers || maxTransfers < 1) {
+          if (!allowTransfers || maxTransfers < 1 || transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
             continue;
           }
 
@@ -1382,64 +1522,229 @@ const server = createServer(async (req, res) => {
               break;
             }
           }
-
-          if (transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
-            break;
-          }
-        }
-
-        if (transferCandidates.length >= PLANNER_MAX_RESULTS * 8) {
-          break;
         }
       }
 
-      if (allowTransfers && maxTransfers > 0 && transferCandidates.length) {
-        candidates.push(...transferCandidates);
+      // Check if we found candidates in this radius band
+      if (candidates.length > 0 || transferCandidates.length > 0) {
+        break;
       }
+      if (effectiveWalkRadius >= WALK_RADIUS_MAX) {
+        break;
+      }
+      searchedUpToRadius = effectiveWalkRadius;
+      if (effectiveWalkRadius < 1000) {
+        effectiveWalkRadius = 1000;
+      } else {
+        effectiveWalkRadius = Math.min(effectiveWalkRadius + WALK_RADIUS_STEP, WALK_RADIUS_MAX);
+      }
+      } // end progressive radius while-loop
 
-      candidates.sort((a, b) => {
-        if (a.transferCount !== b.transferCount) {
-          return a.transferCount - b.transferCount;
-        }
-        if (a.totalSeconds !== b.totalSeconds) {
-          return a.totalSeconds - b.totalSeconds;
-        }
-        if (a.walkDistanceMeters !== b.walkDistanceMeters) {
-          return a.walkDistanceMeters - b.walkDistanceMeters;
-        }
-        if (a.boardEtaSeconds !== b.boardEtaSeconds) {
-          return a.boardEtaSeconds - b.boardEtaSeconds;
-        }
-        return a.stopsToTravel - b.stopsToTravel;
-      });
+      const nearbyOriginStops = allOriginStopsByDistance.filter(
+        (s) => s.walkDistanceMeters <= effectiveWalkRadius
+      );
 
-      const deduped = [];
-      const seen = new Set();
-      const DEDUP_BUCKET_SECONDS = 180; // 3-minute window
-      for (const option of candidates) {
-        const roundedDepartureBucket = Math.floor((option.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
-        const roundedTransferBucket = Math.floor((option.transferBoardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
-        const roundedArrivalBucket = Math.floor((option.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
-        const roundedTotalBucket = Math.floor((option.totalSeconds || 0) / DEDUP_BUCKET_SECONDS);
-        const key = [
-          option.routeId,
-          option.transferRouteId || '',
-          option.boardStopId,
-          option.destinationStopId,
-          roundedDepartureBucket,
-          roundedTransferBucket,
-          roundedArrivalBucket,
-          roundedTotalBucket
-        ].join('__');
-        if (seen.has(key)) {
+    // Hard rule: if there are direct rides to the exact selected stop,
+    // drop all alternatives (nearby stops + transfers).
+    const directToExact = candidates.filter(
+      (c) => c.transferCount === 0 && c.destinationStopId === destinationStopId
+    );
+    const bestDirectToExactWalkMeters = directToExact.length
+      ? Math.min(...directToExact.map((c) => Number(c.walkDistanceMeters) || Number.MAX_SAFE_INTEGER))
+      : Number.MAX_SAFE_INTEGER;
+    const shouldForceDirectOnly = bestDirectToExactWalkMeters <= DIRECT_WALK_HARD_CAP_METERS;
+
+    if (directToExact.length > 0 && !includeSecondaryTransfers && shouldForceDirectOnly) {
+      candidates.length = 0;
+      candidates.push(...directToExact);
+      transferCandidates.length = 0;
+    }
+
+    // Suppress useless transfers:
+    // If at least one direct option exists, hide ALL transfer options.
+    // This enforces a strict "no pointless changes" UX.
+    const directCandidates = candidates.filter((c) => c.transferCount === 0);
+    if (directCandidates.length > 0 && !includeSecondaryTransfers && shouldForceDirectOnly) {
+      transferCandidates.length = 0;
+    }
+
+    // Fallback policy (used only when no direct solution exists):
+    // 1) don't transfer to a route directly boardable from origin
+    // 2) don't transfer if staying on first bus is similarly fast
+    const directRouteIds = new Set(directCandidates.map((c) => c.routeId));
+    if (
+      allowTransfers &&
+      maxTransfers > 0 &&
+      transferCandidates.length &&
+      (includeSecondaryTransfers || directCandidates.length === 0)
+    ) {
+      for (const tc of transferCandidates) {
+        if (directRouteIds.has(tc.transferRouteId)) {
           continue;
         }
-        seen.add(key);
-        deduped.push(option);
-        if (deduped.length >= PLANNER_MAX_RESULTS) {
-          break;
+
+        const directSameBus = directCandidates
+          .filter((dc) => dc.routeId === tc.routeId && dc.boardStopId === tc.boardStopId)
+          .sort((a, b) => a.destinationEtaSeconds - b.destinationEtaSeconds)[0];
+
+        // If same first bus already reaches destination with comparable ETA,
+        // avoid suggesting a forced transfer.
+        if (
+          directSameBus &&
+          directSameBus.destinationEtaSeconds <= tc.destinationEtaSeconds + TRANSFER_MIN_GAIN_SECONDS
+        ) {
+          continue;
+        }
+
+        candidates.push(tc);
+      }
+    }
+
+    // ── TIER 1: Trip-level dedup ──────────────────────────────────
+    // Same physical bus passes through multiple nearby origin stops.
+    // Keep only the closest walk for each (tripId, destinationStopId).
+    // Store other boarding stops as alternativeBoardingStops.
+    const tripMap = new Map();
+    for (const c of candidates) {
+      const tKey = `${c.tripId}__${c.destinationStopId}`;
+      const existing = tripMap.get(tKey);
+      if (!existing) {
+        c.alternativeBoardingStops = [];
+        tripMap.set(tKey, c);
+      } else if (c.walkDistanceMeters < existing.walkDistanceMeters) {
+        existing.alternativeBoardingStops.push({
+          stopId: existing.boardStopId,
+          stopName: existing.boardStopName,
+          walkDistanceMeters: existing.walkDistanceMeters
+        });
+        c.alternativeBoardingStops = existing.alternativeBoardingStops;
+        tripMap.set(tKey, c);
+      } else {
+        existing.alternativeBoardingStops.push({
+          stopId: c.boardStopId,
+          stopName: c.boardStopName,
+          walkDistanceMeters: c.walkDistanceMeters
+        });
+      }
+    }
+    const tripDeduped = [...tripMap.values()];
+
+    // ── TIER 1.5: Route-level dedup across nearby stops ───────────
+    // Same routeId to same destination from different nearby stops.
+    // Keep closest walk, merge boarding alternatives.
+    const routeMap = new Map();
+    for (const c of tripDeduped) {
+      if (c.transferCount > 0) { continue; }
+      const rKey = `${c.routeId}__${c.destinationStopId}`;
+      const existing = routeMap.get(rKey);
+      if (!existing) {
+        routeMap.set(rKey, c);
+      } else if (c.walkDistanceMeters < existing.walkDistanceMeters) {
+        c.alternativeBoardingStops = c.alternativeBoardingStops || [];
+        c.alternativeBoardingStops.push({
+          stopId: existing.boardStopId,
+          stopName: existing.boardStopName,
+          walkDistanceMeters: existing.walkDistanceMeters
+        });
+        for (const alt of (existing.alternativeBoardingStops || [])) {
+          if (!c.alternativeBoardingStops.some(a => a.stopId === alt.stopId)) {
+            c.alternativeBoardingStops.push(alt);
+          }
+        }
+        routeMap.set(rKey, c);
+      } else {
+        existing.alternativeBoardingStops = existing.alternativeBoardingStops || [];
+        existing.alternativeBoardingStops.push({
+          stopId: c.boardStopId,
+          stopName: c.boardStopName,
+          walkDistanceMeters: c.walkDistanceMeters
+        });
+        for (const alt of (c.alternativeBoardingStops || [])) {
+          if (!existing.alternativeBoardingStops.some(a => a.stopId === alt.stopId)) {
+            existing.alternativeBoardingStops.push(alt);
+          }
         }
       }
+    }
+    const routeDeduped = [
+      ...routeMap.values(),
+      ...tripDeduped.filter(c => c.transferCount > 0)
+    ];
+
+    // ── Sort: prefer no transfers, then fastest arrival/total time ─
+    routeDeduped.sort((a, b) => {
+      if (a.transferCount !== b.transferCount) {
+        return a.transferCount - b.transferCount;
+      }
+      if (a.totalSeconds !== b.totalSeconds) {
+        return a.totalSeconds - b.totalSeconds;
+      }
+      if (a.destinationEtaSeconds !== b.destinationEtaSeconds) {
+        return a.destinationEtaSeconds - b.destinationEtaSeconds;
+      }
+      if (a.walkDistanceMeters !== b.walkDistanceMeters) {
+        return a.walkDistanceMeters - b.walkDistanceMeters;
+      }
+      if (a.boardEtaSeconds !== b.boardEtaSeconds) {
+        return a.boardEtaSeconds - b.boardEtaSeconds;
+      }
+      return a.stopsToTravel - b.stopsToTravel;
+    });
+
+    // ── TIER 2: Route + time-bucket dedup ────────────────────────
+    // Same route from same stop in same 3-min window → keep first.
+    const deduped = [];
+    const seen = new Set();
+    const DEDUP_BUCKET_SECONDS = 180;
+    for (const option of routeDeduped) {
+      const roundedDepartureBucket = Math.floor((option.boardEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+      const roundedArrivalBucket = Math.floor((option.destinationEtaSeconds || 0) / DEDUP_BUCKET_SECONDS);
+      const key = [
+        option.routeId,
+        option.transferRouteId || '',
+        option.boardStopId,
+        option.destinationStopId,
+        roundedDepartureBucket,
+        roundedArrivalBucket
+      ].join('__');
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      deduped.push(option);
+    }
+
+    // ── TIER 3: Segment grouping — Google Maps style ─────────────
+    // Same boardStop + destinationStop = one card, multiple route pills.
+    const grouped = [];
+    const segmentMap = new Map();
+    for (const option of deduped) {
+      if (option.transferCount > 0) {
+        option.alternativeRoutes = option.alternativeRoutes || [];
+        grouped.push(option);
+        continue;
+      }
+      const segKey = `${option.boardStopId}__${option.destinationStopId}`;
+      const existing = segmentMap.get(segKey);
+      if (existing) {
+        if (existing.routeId !== option.routeId &&
+            !existing.alternativeRoutes.some(a => a.routeId === option.routeId)) {
+          existing.alternativeRoutes.push({
+            routeId: option.routeId,
+            tripId: option.tripId,
+            boardEtaSeconds: option.boardEtaSeconds,
+            totalSeconds: option.totalSeconds,
+            tripHeadsign: option.tripHeadsign
+          });
+        }
+      } else {
+        option.alternativeRoutes = option.alternativeRoutes || [];
+        segmentMap.set(segKey, option);
+        grouped.push(option);
+      }
+    }
+
+    const finalOptions = grouped.slice(0, PLANNER_MAX_RESULTS);
 
       const payload = {
         origin: { lat: originLat, lon: originLon },
@@ -1447,10 +1752,11 @@ const server = createServer(async (req, res) => {
         destinationAlternativesCount: destinationAlternatives.length,
         nearbyOriginStopsCount: nearbyOriginStops.length,
         maxWalkMeters,
+        effectiveWalkRadius,
         maxLookAheadSeconds,
         allowTransfers,
         maxTransfers,
-        options: deduped
+        options: finalOptions
       };
 
       send(res, 200, JSON.stringify(payload), 'application/json; charset=utf-8');
