@@ -164,7 +164,7 @@ html, body {
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
-/* â”€â”€ Floating Map Controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Floating Map Controls */
 .floating-controls {
   position: fixed;
   top: 16px;
@@ -349,6 +349,37 @@ html, body {
   border-color: rgba(56, 189, 248, 0.45);
 }
 
+.traffic-lights-toggle {
+  position: fixed;
+  right: 14px;
+  bottom: 74px;
+  z-index: calc(var(--z-card) + 2);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: var(--surface);
+  color: var(--warning);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  transition: transform var(--transition-fast), background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.traffic-lights-toggle:hover {
+  transform: translateY(-1px);
+  background: var(--surface-hover);
+}
+
+.traffic-lights-toggle.is-off {
+  color: var(--text-secondary);
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
 /* ── Floating Search Card (Glassmorphism) ───────────────── */
 .search-card {
   position: fixed;
@@ -380,7 +411,7 @@ html, body {
 
 .search-card__header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 16px 20px 0;
 }
@@ -398,6 +429,27 @@ html, body {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.search-card__collapse-btn {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--glass-border);
+  background: rgba(30, 41, 59, 0.5);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+}
+
+.search-card__collapse-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  transform: translateX(-1px);
 }
 
 .search-card__body {
@@ -587,6 +639,32 @@ html, body {
   font-size: 0.82rem;
   color: var(--text-secondary);
   line-height: 1.45;
+}
+
+.next-journey-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.38);
+}
+
+.next-journey-times__label {
+  width: 100%;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.next-journey-times__chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-radius: var(--radius-pill);
+  padding: 3px 8px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.25);
 }
 
 /* ── Route Options Cards ────────────────────────────────── */
@@ -985,6 +1063,13 @@ html, body {
     height: 40px;
   }
 
+  .traffic-lights-toggle {
+    right: 12px;
+    bottom: 62px;
+    width: 40px;
+    height: 40px;
+  }
+
   .startup-alert-modal {
     align-items: flex-end;
     padding: 10px;
@@ -1032,6 +1117,10 @@ html, body {
 
   .search-card__header {
     padding: 8px 20px 0;
+  }
+
+  .search-card__collapse-btn {
+    display: none;
   }
 
   /* Collapsed bottom-sheet slides down */

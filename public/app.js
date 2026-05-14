@@ -1,10 +1,4 @@
-import { requestStaticPlan } from './planner.js';
-import {
-  calculateTrafficLightState,
-  calculateTrafficLightArmState,
-  trafficLightStateBadgeClass,
-  trafficLightStateEmoji
-} from './traffic-lights.js';
+﻿import { requestStaticPlan } from './planner.js';
 
 function apiUrl(pathAndQuery) {
   const normalized = String(pathAndQuery || '').replace(/^\/+/, '');
@@ -35,7 +29,7 @@ async function readJsonResponse(response, label) {
   throw new Error(`${label} non restituisce JSON valido (${preview || 'risposta vuota'})`);
 }
 
-// ── DOM refs: removed elements get null-safe fallback ──
+// DOM refs: removed elements get null-safe fallback
 const message = document.querySelector('#message');
 const lineSelect = document.querySelector('#lineSelect');
 const destinationStopSelect = document.querySelector('#destinationStopSelect');
@@ -56,20 +50,23 @@ const feedBannerDismiss = document.querySelector('#feedBannerDismiss');
 // New UI elements
 const searchCard = document.querySelector('#searchCard');
 const editRouteBtn = document.querySelector('#editRouteBtn');
+const searchCardCollapseBtn = document.querySelector('#searchCardCollapseBtn');
 const swapBtn = document.querySelector('#swapBtn');
 const routeSummaryWrap = document.querySelector('#routeSummaryWrap');
 const sheetHandle = document.querySelector('#sheetHandle');
 const lineFilterSelect = document.querySelector('#lineFilterSelect');
 const basemapToggleBtn = document.querySelector('#basemapToggleBtn');
+const trafficLightsToggleBtn = document.querySelector('#trafficLightsToggleBtn');
 const startupAlertModal = document.querySelector('#startupAlertModal');
 const startupAlertCloseBtn = document.querySelector('#startupAlertCloseBtn');
+const nextJourneyTimes = document.querySelector('#nextJourneyTimes');
 
 let feedConsecutiveFailures = 0;
 let feedBannerDismissedAt = 0;
 const routeSummaryText = document.querySelector('#routeSummaryText');
 const routeOptionsList = document.querySelector('#routeOptionsList');
 
-// Removed elements — null-safe stubs for code that still references them
+// Removed elements - null-safe stubs for code that still references them
 const tableBody = null;
 const toggleSemafori = null;
 const semaforiZoomHint = null;
@@ -102,13 +99,13 @@ const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 const NOMINATIM_RESULT_LIMIT = 5;
 const STARTUP_ALERT_SESSION_KEY = 'muvt_startup_alert_seen_session';
 const STARTUP_ALERT_DAY_KEY = 'muvt_startup_alert_seen_day';
+const TRAFFIC_LIGHTS_TOGGLE_KEY = 'muvt_traffic_lights_enabled';
 const SEARCH_MIN_QUERY_LENGTH = 3;
 const SEARCH_DEBOUNCE_MS = 350;
 const DIRECT_ONLY_WALK_CAP_METERS = 1500;
 const SECONDARY_MIN_WALK_GAIN_METERS = 250;
 const SECONDARY_MAX_EXTRA_SECONDS = 20 * 60;
-const SEMAFORI_REFRESH_MS = 1000;
-const SEMAFORI_MIN_ZOOM = 14;
+const SEMAFORI_MIN_ZOOM = 13;
 const SIMULATION_MAX_AGE_MS = 20 * 60 * 1000;
 const SIMULATION_DWELL_SECONDS = 60;
 const SIMULATION_SPEED_MPS = 4.5;
@@ -146,9 +143,8 @@ let stopsApiDisabled = false;
 let semaforiLayer = null;
 let semaforiLoaded = false;
 let semaforiData = [];
-let semaforiTimer = null;
+let semaforiEnabled = true;
 let lastSimulatedCount = 0;
-const semaforiMarkersById = new Map();
 const tripDetailsCache = new Map();
 const routeDebugLines = [];
 const walkingRouteCache = new Map();
@@ -206,7 +202,7 @@ function createBusIcon(routeId, options = {}) {
 
   return L.divIcon({
     className: simulated ? 'bus-marker bus-marker--simulated' : 'bus-marker',
-    html: `<span class="bus-marker__badge">🚌 ${routeId || '?'}${simulated ? ' SIM' : ''}</span>`,
+    html: `<span class="bus-marker__badge">${routeId || '?'}${simulated ? ' SIM' : ''}</span>`,
     iconSize: simulated ? [78, 28] : [56, 26],
     iconAnchor: [28, 13]
   });
@@ -580,40 +576,18 @@ function initMap() {
   applySemaforiVisibility();
 }
 
-function semaforoStatusLabel(stato) {
-  switch (stato) {
-    case 'verde':
-      return 'Verde';
-    case 'giallo':
-      return 'Giallo';
-    case 'rosso':
-      return 'Rosso';
-    case 'lampeggiante':
-      return 'Giallo lampeggiante';
-    case 'spento':
-      return 'Spento';
-    default:
-      return 'Spento';
-  }
-}
-
-function createSemaforoIcon(stato) {
-  const activeRed = stato === 'rosso';
-  const activeYellow = stato === 'giallo' || stato === 'lampeggiante';
-  const activeGreen = stato === 'verde';
-  const flashingClass = stato === 'lampeggiante' ? ' semaforo-lampeggiante' : '';
-
+function createSemaforoIcon() {
   return L.divIcon({
-    className: `semaforo-icon${flashingClass}`,
+    className: 'semaforo-icon semaforo-lampeggiante',
     html: `
       <svg class="semaforo-svg" viewBox="0 0 16 32" aria-hidden="true">
         <rect x="2" y="1" width="12" height="30" rx="3" fill="#1f2937" stroke="#111827" stroke-width="1"/>
         <rect x="4" y="4.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
         <rect x="4" y="13.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
         <rect x="4" y="22.6" width="8" height="1.4" rx="0.8" fill="#0b0f16"/>
-        <circle class="semaforo-luce luce-rosso${activeRed ? ' attiva' : ''}" cx="8" cy="8" r="2.8" fill="#ef4444" style="color:#ef4444" />
-        <circle class="semaforo-luce luce-giallo${activeYellow ? ' attiva' : ''}" cx="8" cy="16" r="2.8" fill="#eab308" style="color:#eab308" />
-        <circle class="semaforo-luce luce-verde${activeGreen ? ' attiva' : ''}" cx="8" cy="24" r="2.8" fill="#22c55e" style="color:#22c55e" />
+        <circle class="semaforo-luce luce-rosso" cx="8" cy="8" r="2.8" fill="#ef4444" style="color:#ef4444" />
+        <circle class="semaforo-luce luce-giallo attiva" cx="8" cy="16" r="2.8" fill="#eab308" style="color:#eab308" />
+        <circle class="semaforo-luce luce-verde" cx="8" cy="24" r="2.8" fill="#22c55e" style="color:#22c55e" />
       </svg>
     `,
     iconSize: [16, 32],
@@ -621,21 +595,13 @@ function createSemaforoIcon(stato) {
   });
 }
 
-function renderSemaforoPopup(item, state) {
-  const badgeClass = trafficLightStateBadgeClass(state.stato);
-  const emoji = trafficLightStateEmoji(state.stato);
-  const seconds = Math.max(0, Math.round((state.rimanentiMs || 0) / 1000));
-
+function renderSemaforoPopup(item) {
   return [
     `<b>Semaforo #${item.id}</b>`,
+    '⚠️ Segnalazione semaforo',
     `📍 ${item.indirizzo || 'n/d'}`,
-    `🏛️ ${item.municipio || 'n/d'}`,
-    `Stato: <span class="semaforo-popup-badge ${badgeClass}">${emoji} ${semaforoStatusLabel(state.stato)}</span>`,
-    `Cambio tra: ${seconds}s`,
-    item.isOndaVerde ? '🌊 Onda Verde attiva' : ''
-  ]
-    .filter(Boolean)
-    .join('<br>');
+    `🏛️ ${item.municipio || 'n/d'}`
+  ].join('<br>');
 }
 
 function clampSemaforiApproachCount(value) {
@@ -702,23 +668,18 @@ function getSemaforoArmPoints(item) {
   });
 }
 
-function renderSemaforoPopupWithArm(item, state, armIndex, armTotal) {
+function renderSemaforoPopupWithArm(item, armIndex, armTotal) {
   const suffix = armTotal > 1 ? `<br>🚦 Braccio ${armIndex}/${armTotal}` : '';
   const source = item.approachCountSource ? `<br>Conteggio: ${item.approachCountSource}` : '';
-  return `${renderSemaforoPopup(item, state)}${suffix}${source}`;
+  return `${renderSemaforoPopup(item)}${suffix}${source}`;
 }
 
 function semaforiShouldBeVisible() {
-  return Boolean(toggleSemafori?.checked) && Boolean(map) && map.getZoom() >= SEMAFORI_MIN_ZOOM;
+  return Boolean(map) && semaforiEnabled && map.getZoom() >= SEMAFORI_MIN_ZOOM;
 }
 
 function updateSemaforiZoomHint() {
   if (!semaforiZoomHint) {
-    return;
-  }
-
-  if (!toggleSemafori?.checked) {
-    semaforiZoomHint.textContent = '';
     return;
   }
 
@@ -728,23 +689,6 @@ function updateSemaforiZoomHint() {
   }
 
   semaforiZoomHint.textContent = '';
-}
-
-function stopSemaforiTicker() {
-  if (semaforiTimer) {
-    clearInterval(semaforiTimer);
-    semaforiTimer = null;
-  }
-}
-
-function startSemaforiTicker() {
-  if (semaforiTimer) {
-    return;
-  }
-
-  semaforiTimer = setInterval(() => {
-    updateSemaforiStates();
-  }, SEMAFORI_REFRESH_MS);
 }
 
 async function loadSemafori() {
@@ -785,62 +729,28 @@ function renderSemaforiMarkers() {
   }
 
   semaforiLayer.clearLayers();
-  semaforiMarkersById.clear();
 
   for (const item of semaforiData) {
-    const now = Date.now();
     const armPoints = getSemaforoArmPoints(item);
 
     armPoints.forEach((armPoint) => {
-      const state = calculateTrafficLightArmState(item, armPoint.armIndex, armPoint.armTotal, now);
       const marker = L.marker([armPoint.lat, armPoint.lon], {
-        icon: createSemaforoIcon(state.stato),
+        icon: createSemaforoIcon(),
         pane: 'semaforiPane'
       });
 
-      marker.bindPopup(renderSemaforoPopupWithArm(item, state, armPoint.armIndex, armPoint.armTotal));
+      marker.bindPopup(renderSemaforoPopupWithArm(item, armPoint.armIndex, armPoint.armTotal));
       semaforiLayer.addLayer(marker);
-
-      const markerKey = `${item.id}__${item.lat.toFixed(5)}__${item.lon.toFixed(5)}__${armPoint.armIndex}`;
-      semaforiMarkersById.set(markerKey, {
-        marker,
-        item,
-        stato: state.stato,
-        armIndex: armPoint.armIndex,
-        armTotal: armPoint.armTotal
-      });
     });
-  }
-}
-
-function updateSemaforiStates() {
-  if (!semaforiMarkersById.size) {
-    return;
-  }
-
-  const now = Date.now();
-
-  for (const data of semaforiMarkersById.values()) {
-    const next = calculateTrafficLightArmState(data.item, data.armIndex, data.armTotal, now);
-
-    if (next.stato !== data.stato) {
-      data.marker.setIcon(createSemaforoIcon(next.stato));
-      data.stato = next.stato;
-    }
-
-    const element = data.marker.getElement();
-    if (element) {
-      element.classList.toggle('semaforo-lampeggiante', next.stato === 'lampeggiante');
-    }
-
-    if (data.marker.isPopupOpen()) {
-      data.marker.setPopupContent(renderSemaforoPopupWithArm(data.item, next, data.armIndex, data.armTotal));
-    }
   }
 }
 
 async function enableSemaforiLayer() {
   initMap();
+  if (!semaforiEnabled) {
+    disableSemaforiLayer();
+    return;
+  }
 
   if (!semaforiLoaded) {
     try {
@@ -854,20 +764,16 @@ async function enableSemaforiLayer() {
     }
   }
 
-  updateSemaforiStates();
-
   if (semaforiShouldBeVisible() && semaforiLayer) {
     semaforiLayer.addTo(map);
   } else if (semaforiLayer && map.hasLayer(semaforiLayer)) {
     map.removeLayer(semaforiLayer);
   }
 
-  startSemaforiTicker();
   updateSemaforiZoomHint();
 }
 
 function disableSemaforiLayer() {
-  stopSemaforiTicker();
   if (map && semaforiLayer && map.hasLayer(semaforiLayer)) {
     map.removeLayer(semaforiLayer);
   }
@@ -876,12 +782,12 @@ function disableSemaforiLayer() {
 
 function applySemaforiVisibility() {
   updateSemaforiZoomHint();
-  if (!toggleSemafori?.checked) {
-    disableSemaforiLayer();
+  if (!map) {
     return;
   }
 
-  if (!map) {
+  if (!semaforiEnabled) {
+    disableSemaforiLayer();
     return;
   }
 
@@ -965,7 +871,7 @@ function syncDestinationFromMapPoint() {
   }
 
   const sourceLabel = destinationSource === 'search' ? 'Arrivo ricerca' : 'Arrivo mappa';
-  mapDestinationText.textContent = `${sourceLabel} (${destinationPosition.lat.toFixed(5)}, ${destinationPosition.lon.toFixed(5)}) · fermata più vicina: ${formatStopName(nearest.stopId)} (${Math.round(nearest.distanceMeters)} m).`;
+  mapDestinationText.textContent = `${sourceLabel} (${destinationPosition.lat.toFixed(5)}, ${destinationPosition.lon.toFixed(5)}) - fermata piu vicina: ${formatStopName(nearest.stopId)} (${Math.round(nearest.distanceMeters)} m).`;
 }
 
 function buildPopup(item) {
@@ -975,13 +881,13 @@ function buildPopup(item) {
     ? stopName
     : '';
 
-  let html = `<div class="popup-route">🚌 ${routeLabel}</div>`;
+  let html = `<div class="popup-route">Bus ${routeLabel}</div>`;
   if (destText) {
-    html += `<div class="popup-dest">→ ${destText}</div>`;
+    html += `<div class="popup-dest">-> ${destText}</div>`;
   }
 
   if (item.isSimulated) {
-    html += `<div class="popup-stale">⚠️ Posizione stimata</div>`;
+    html += '<div class="popup-stale">Posizione stimata</div>';
   }
 
   return html;
@@ -1523,6 +1429,105 @@ function setRouteSummary(text) {
   if (routeSummaryWrap) routeSummaryWrap.hidden = false;
 }
 
+function getRoutePathKey(option) {
+  if (!option) {
+    return '';
+  }
+  return [
+    option.transferCount > 0 ? 'transfer' : 'direct',
+    option.routeId || '',
+    option.transferRouteId || '',
+    option.boardStopId || '',
+    option.transferStopId || '',
+    option.destinationStopId || ''
+  ].join('__');
+}
+
+function renderNextJourneyTimes(selectedOption) {
+  if (!nextJourneyTimes) {
+    return;
+  }
+
+  if (!selectedOption || !Array.isArray(currentRouteOptions) || !currentRouteOptions.length) {
+    nextJourneyTimes.hidden = true;
+    nextJourneyTimes.innerHTML = '';
+    return;
+  }
+
+  const targetKey = getRoutePathKey(selectedOption);
+  if (!targetKey) {
+    nextJourneyTimes.hidden = true;
+    nextJourneyTimes.innerHTML = '';
+    return;
+  }
+
+  const times = currentRouteOptions
+    .filter((item) => getRoutePathKey(item) === targetKey)
+    .map((item) => Number(item.boardEtaSeconds))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+
+  const uniqTimes = [...new Set(times)].slice(0, 6);
+
+  if (!uniqTimes.length) {
+    nextJourneyTimes.hidden = true;
+    nextJourneyTimes.innerHTML = '';
+    return;
+  }
+
+  const chips = uniqTimes
+    .map((eta) => `<span class="next-journey-times__chip">${formatClockFromEta(eta)}</span>`)
+    .join('');
+
+  const transferLabel = selectedOption.transferCount > 0 && selectedOption.transferRouteId
+    ? ` (${selectedOption.routeId} → ${selectedOption.transferRouteId})`
+    : ` (linea ${selectedOption.routeId})`;
+
+  nextJourneyTimes.innerHTML = `
+    <span class="next-journey-times__label">Prossime partenze${transferLabel}</span>
+    ${chips}
+  `;
+  nextJourneyTimes.hidden = false;
+}
+
+function loadSemaforiPreference() {
+  try {
+    const stored = localStorage.getItem(TRAFFIC_LIGHTS_TOGGLE_KEY);
+    semaforiEnabled = stored !== '0';
+  } catch {
+    semaforiEnabled = true;
+  }
+}
+
+function saveSemaforiPreference() {
+  try {
+    localStorage.setItem(TRAFFIC_LIGHTS_TOGGLE_KEY, semaforiEnabled ? '1' : '0');
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
+function syncSemaforiToggleUi() {
+  if (!trafficLightsToggleBtn) {
+    return;
+  }
+
+  trafficLightsToggleBtn.classList.toggle('is-off', !semaforiEnabled);
+  trafficLightsToggleBtn.setAttribute('aria-pressed', semaforiEnabled ? 'true' : 'false');
+  trafficLightsToggleBtn.setAttribute('title', semaforiEnabled ? 'Semafori attivi' : 'Semafori disattivati');
+}
+
+function setSemaforiEnabled(nextValue) {
+  semaforiEnabled = Boolean(nextValue);
+  syncSemaforiToggleUi();
+  saveSemaforiPreference();
+  if (semaforiEnabled) {
+    enableSemaforiLayer();
+  } else {
+    disableSemaforiLayer();
+  }
+}
+
 function clearNavigationLayer() {
   if (map && navRouteLayer) {
     map.removeLayer(navRouteLayer);
@@ -1544,6 +1549,7 @@ function resetActiveMapSelection() {
   routeShapeLayer = null;
   selectedTripContext = null;
   selectedRouteOptionKey = '';
+  renderNextJourneyTimes(null);
 }
 
 function getTodayStorageKey() {
@@ -1818,6 +1824,7 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
 
   if (!Array.isArray(options) || !options.length) {
     routeOptionsList.innerHTML = '';
+    renderNextJourneyTimes(null);
     return;
   }
 
@@ -1827,7 +1834,7 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
   const groups = new Map();
   for (const item of top) {
     const lineLabel = item.transferCount > 0 && item.transferRouteId
-      ? `${item.routeId} → ${item.transferRouteId}`
+      ? `${item.routeId} -> ${item.transferRouteId}`
       : String(item.routeId || '?');
     const groupKey = `${lineLabel}__${item.boardStopId || ''}__${item.destinationStopId || ''}`;
     const values = groups.get(groupKey) || [];
@@ -1869,7 +1876,7 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
 
     let lineText;
     if (head.transferCount > 0) {
-      const lineLabel = `${head.routeId} → ${head.transferRouteId}`;
+      const lineLabel = `${head.routeId} -> ${head.transferRouteId}`;
       lineText = `Linee ${lineLabel}`;
     } else if (allRoutes.length > 1) {
       lineText = `Linee ${routePills}`;
@@ -1878,7 +1885,7 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
     }
 
     const transferText = head.transferCount > 0 && head.transferStopName
-      ? ` · Cambio: ${head.transferStopName}`
+      ? ` - Cambio: ${head.transferStopName}`
       : '';
 
     const alternativeStopNames = Array.isArray(head.alternativeBoardingStops)
@@ -1903,13 +1910,13 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
                   return `
               <article class="route-option-card route-option-card--extra ${isItemSelected ? 'route-option-card--selected' : ''}" data-route-key="${itemKey}">
                 <div class="route-option-meta">
-                  <span class="route-option-chip">🚶 ${formatDistanceMeters(item.walkDistanceMeters)}</span>
+                  <span class="route-option-chip">A piedi ${formatDistanceMeters(item.walkDistanceMeters)}</span>
                   <span class="route-option-chip">Partenza ${formatClockFromEta(item.boardEtaSeconds)}</span>
                   ${item.transferCount > 0 ? `<span class="route-option-chip">Cambio ${formatClockFromEta(item.transferBoardEtaSeconds)}</span>` : ''}
                   <span class="route-option-chip">Arrivo ${formatClockFromEta(item.destinationEtaSeconds)}</span>
                   <span class="route-option-chip">Totale ${formatDurationSeconds(item.totalEffectiveSeconds || item.totalSeconds)}</span>
                 </div>
-                <p class="route-option-line">Salita: ${item.boardStopName} · Discesa: ${item.destinationStopName}</p>
+                <p class="route-option-line">Salita: ${item.boardStopName} - Discesa: ${item.destinationStopName}</p>
               </article>
             `;
                 }
@@ -1922,19 +1929,19 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
 
     return `
       <article class="route-option-card ${isBest ? 'route-option-card--best' : ''} ${isSelected ? 'route-option-card--selected' : ''}" data-route-key="${headKey}">
-        <p class="route-option-title">${lineText}${head.vehicleId ? ` · Veicolo ${head.vehicleId}` : ''}</p>
+        <p class="route-option-title">${lineText}${head.vehicleId ? ` - Veicolo ${head.vehicleId}` : ''}</p>
         <div class="route-option-meta">
-          <span class="route-option-chip">🚶 ${formatDistanceMeters(head.totalWalkMeters || head.walkDistanceMeters)}</span>
+          <span class="route-option-chip">A piedi ${formatDistanceMeters(head.totalWalkMeters || head.walkDistanceMeters)}</span>
           <span class="route-option-chip">Partenza ${formatClockFromEta(head.boardEtaSeconds)}</span>
           ${head.transferCount > 0 ? `<span class="route-option-chip">Cambio ${formatClockFromEta(head.transferBoardEtaSeconds)}</span>` : ''}
           <span class="route-option-chip">Arrivo ${formatClockFromEta(head.destinationEtaSeconds)}</span>
           <span class="route-option-chip">Totale ${formatDurationSeconds(head.totalEffectiveSeconds || head.totalSeconds)}</span>
         </div>
-        <p class="route-option-line">🚶 ${formatDistanceMeters(head.walkDistanceMeters)} fino a salita · Salita: ${head.boardStopName}${alternativeStopNames.length ? ` <span class="alt-stops-hint">(anche da ${alternativeStopNames.join(', ')})</span>` : ''}
+        <p class="route-option-line">A piedi ${formatDistanceMeters(head.walkDistanceMeters)} fino a salita - Salita: ${head.boardStopName}${alternativeStopNames.length ? ` <span class="alt-stops-hint">(anche da ${alternativeStopNames.join(', ')})</span>` : ''}
         </p>
         <p class="route-option-line">Discesa: ${head.destinationStopName}</p>
         <p class="route-option-line">Ultimo tratto a piedi: ${formatDistanceMeters(head.destinationWalkMeters || 0)}</p>
-        <p class="route-option-line">Fermate: ${head.stopsToTravel}${transferText}${isBest ? ' · Consigliato' : ''}</p>
+        <p class="route-option-line">Fermate: ${head.stopsToTravel}${transferText}${isBest ? ' - Consigliato' : ''}</p>
         ${othersMarkup}
       </article>
     `;
@@ -1952,9 +1959,9 @@ function renderRouteOptionCards(options, best, secondaryOptions = []) {
               const isSelected = selectedRouteOptionKey && selectedRouteOptionKey === key;
               return `
                 <article class="route-option-card route-option-card--secondary ${isSelected ? 'route-option-card--selected' : ''}" data-route-key="${key}">
-                  <p class="route-option-title">Linee ${item.routeId} → ${item.transferRouteId}</p>
+                  <p class="route-option-title">Linee ${item.routeId} -> ${item.transferRouteId}</p>
                   <div class="route-option-meta">
-                    <span class="route-option-chip">🚶 ${formatDistanceMeters(item.walkDistanceMeters)}</span>
+                    <span class="route-option-chip">A piedi ${formatDistanceMeters(item.walkDistanceMeters)}</span>
                     <span class="route-option-chip">Partenza ${formatClockFromEta(item.boardEtaSeconds)}</span>
                     <span class="route-option-chip">Cambio ${formatClockFromEta(item.transferBoardEtaSeconds)}</span>
                     <span class="route-option-chip">Arrivo ${formatClockFromEta(item.destinationEtaSeconds)}</span>
@@ -2302,7 +2309,7 @@ async function renderBusRouteOnMap(best) {
   map.fitBounds(bounds, { padding: [40, 40] });
 }
 
-// pickBestBusForDestination removed — was dead code, replaced by server-side planner (requestStaticPlan)
+// pickBestBusForDestination removed - was dead code, replaced by server-side planner (requestStaticPlan)
 
 async function calculateRouteToSelectedStop() {
   if (routingBusy) {
@@ -2456,6 +2463,7 @@ async function calculateRouteToSelectedStop() {
       currentRouteOptions = [];
       currentSecondaryRouteOptions = [];
       selectedRouteOptionKey = '';
+      renderNextJourneyTimes(null);
       setRouteSummary('Nessun bus compatibile trovato ora per questa destinazione. Prova a cambiare fermata o riprovare tra poco.');
       return;
     }
@@ -2472,8 +2480,9 @@ async function calculateRouteToSelectedStop() {
     renderBusRouteSteps(best);
     renderRouteOptionCards(options, best, secondaryOptions);
     setRouteSummary(
-      `Percorso migliore: ${best.transferCount > 0 ? `linee ${best.routeId}→${best.transferRouteId}` : `linea ${best.routeId}`} (${best.vehicleId || 'n/d'}) · Partenza ${formatClockFromEta(best.boardEtaSeconds)} · Arrivo ${formatClockFromEta(best.destinationEtaSeconds)} · Totale ${formatDurationSeconds(best.totalEffectiveSeconds || best.totalSeconds)} · Salita a ${best.boardStopName}`
+      `Percorso migliore: ${best.transferCount > 0 ? `linee ${best.routeId}->${best.transferRouteId}` : `linea ${best.routeId}`} (${best.vehicleId || 'n/d'}) - Partenza ${formatClockFromEta(best.boardEtaSeconds)} - Arrivo ${formatClockFromEta(best.destinationEtaSeconds)} - Totale ${formatDurationSeconds(best.totalEffectiveSeconds || best.totalSeconds)} - Salita a ${best.boardStopName}`
     );
+    renderNextJourneyTimes(best);
     // Auto-collapse the search UI so the user can see the route on the map
     setTimeout(() => {
       if (typeof collapseSearchCard === 'function') collapseSearchCard();
@@ -2486,6 +2495,7 @@ async function calculateRouteToSelectedStop() {
     currentRouteOptions = [];
     currentSecondaryRouteOptions = [];
     selectedRouteOptionKey = '';
+    renderNextJourneyTimes(null);
   } finally {
     routingBusy = false;
   }
@@ -2503,7 +2513,7 @@ function onGeolocationUpdate(position) {
   }
 
   updateUserMarker();
-  const accuracyText = userPosition.accuracy ? `±${Math.round(userPosition.accuracy)}m` : 'accuratezza n/d';
+  const accuracyText = userPosition.accuracy ? `+-${Math.round(userPosition.accuracy)}m` : 'accuratezza n/d';
   if (activeOriginMode === 'gps') {
     setRouteSummary(`Posizione GPS aggiornata (${accuracyText}).`);
   }
@@ -2577,19 +2587,19 @@ function formatCalendarSummary(serviceSummary) {
   const days = formatDays(base.days) || 'nessun giorno';
   const active = serviceSummary.activeOnDate;
   const activeText = active == null ? 'stato data non disponibile' : active ? 'attiva oggi' : 'non attiva oggi';
-  return `Service ${serviceSummary.serviceId}: ${days}. Validità ${base.startDate} - ${base.endDate} (${activeText}).`;
+  return `Service ${serviceSummary.serviceId}: ${days}. Validita ${base.startDate} - ${base.endDate} (${activeText}).`;
 }
 
 function renderTripDetails(data) {
   const route = data.routeId || 'n/d';
   const trip = data.tripId || 'n/d';
   const total = data.totalStops || 0;
-  if (tripDetailsSummary) tripDetailsSummary.textContent = `Linea ${route} · Trip ${trip} · Fermate totali: ${total}`;
+  if (tripDetailsSummary) tripDetailsSummary.textContent = `Linea ${route} - Trip ${trip} - Fermate totali: ${total}`;
 
   if (upcomingStops) {
     if (Array.isArray(data.upcomingStops) && data.upcomingStops.length) {
       upcomingStops.innerHTML = data.upcomingStops
-        .map((item) => `<li>${item.stopSequence}. ${item.stopName} — prev. ${item.arrivalTime} · stimato ${item.predictedArrivalTime}</li>`)
+        .map((item) => `<li>${item.stopSequence}. ${item.stopName} - prev. ${item.arrivalTime} - stimato ${item.predictedArrivalTime}</li>`)
         .join('');
     } else {
       upcomingStops.innerHTML = '<li>Nessuna fermata in arrivo disponibile</li>';
@@ -2894,7 +2904,7 @@ function mergeTripAndPosition(trips, positionsByKey) {
       mergeNoPosition += 1;
     }
 
-    // TripUpdates always provides a routeId — trust it as source of truth
+    // TripUpdates always provides a routeId - trust it as source of truth
     const routeId = trip.routeId;
     if (!routeId || routeId === '0') {
       excludedNoRoute += 1;
@@ -2932,7 +2942,7 @@ function mergeTripAndPosition(trips, positionsByKey) {
   return merged.sort((a, b) => a.arrivalTime - b.arrivalTime);
 }
 
-// renderRows / renderStats / updateMapTitle — no-ops (UI elements removed)
+// renderRows / renderStats / updateMapTitle - no-ops (UI elements removed)
 function renderRows() {}
 function renderStats() {}
 function updateMapTitle() {}
@@ -3103,7 +3113,7 @@ async function loadData() {
           renderTripDetailsPlaceholder(`Dettagli corsa non disponibili: ${error.message}`);
         }
       } else {
-        renderTripDetailsPlaceholder('La corsa selezionata non è più presente nel feed live');
+        renderTripDetailsPlaceholder('La corsa selezionata non e piu presente nel feed live');
       }
     }
 
@@ -3112,9 +3122,9 @@ async function loadData() {
       const feedAgeSeconds = Math.floor(Date.now() / 1000 - feedTs);
       if (feedAgeSeconds > 120) {
         const mins = Math.floor(feedAgeSeconds / 60);
-        showFeedBanner(`⚠️ Feed GTFS-RT non aggiornato da ${mins} minuti — i dati potrebbero non essere attendibili.`, 'warn');
+        showFeedBanner(`Attenzione: feed GTFS-RT non aggiornato da ${mins} minuti - i dati potrebbero non essere attendibili.`, 'warn');
       } else if (feedConsecutiveFailures > 0) {
-        showFeedBanner('✅ Connessione al feed ripristinata.', 'ok');
+        showFeedBanner('OK: connessione al feed ripristinata.', 'ok');
         setTimeout(hideFeedBanner, 5000);
       } else {
         hideFeedBanner();
@@ -3124,14 +3134,14 @@ async function loadData() {
     }
     feedConsecutiveFailures = 0;
 
-    const simText = lastSimulatedCount > 0 ? ` · ${lastSimulatedCount} bus in simulazione` : '';
+    const simText = lastSimulatedCount > 0 ? ` - ${lastSimulatedCount} bus in simulazione` : '';
     message.textContent = `Dati aggiornati alle ${new Date().toLocaleTimeString('it-IT')}${simText}`;
   } catch (error) {
     feedConsecutiveFailures++;
     const level = feedConsecutiveFailures >= 3 ? 'error' : 'warn';
     const label = feedConsecutiveFailures >= 3
-      ? `🔴 Feed non disponibile (${feedConsecutiveFailures} tentativi falliti): ${error.message}`
-      : `⚠️ Errore temporaneo feed: ${error.message}`;
+      ? `Errore: feed non disponibile (${feedConsecutiveFailures} tentativi falliti): ${error.message}`
+      : `Attenzione: errore temporaneo feed: ${error.message}`;
     showFeedBanner(label, level);
 
     message.textContent = `Errore durante il recupero feed: ${error.message}`;
@@ -3152,9 +3162,7 @@ function startAutoRefresh() {
   timer = setInterval(loadData, REFRESH_MS);
 }
 
-// ═══════════════════════════════════════════════════════════
-// UI State Orchestration — Zero-UI search card collapse/expand
-// ═══════════════════════════════════════════════════════════
+// UI State Orchestration - Zero-UI search card collapse/expand
 
 function collapseSearchCard() {
   if (!searchCard) return;
@@ -3180,7 +3188,7 @@ function onRouteCalculated(summaryText) {
   setTimeout(collapseSearchCard, 600);
 }
 
-// ── Swap origin ↔ destination ──
+// Swap origin <-> destination
 swapBtn?.addEventListener('click', () => {
   const originVal = originSearchInput?.value || '';
   const destVal = destinationSearchInput?.value || '';
@@ -3206,12 +3214,16 @@ swapBtn?.addEventListener('click', () => {
   }
 });
 
-// ── Edit route pill ──
+// Edit route pill
 editRouteBtn?.addEventListener('click', () => {
   expandSearchCard();
 });
 
-// ── GPS locate ──
+searchCardCollapseBtn?.addEventListener('click', () => {
+  collapseSearchCard();
+});
+
+// GPS locate
 locateBtn?.addEventListener('click', () => {
   searchOriginPosition = null;
   manualPosition = null;
@@ -3222,7 +3234,7 @@ locateBtn?.addEventListener('click', () => {
   startUserLocationWatch();
 });
 
-// ── Route calculation ──
+// Route calculation
 routeNowBtn?.addEventListener('click', async () => {
   if (routeNowBtn) routeNowBtn.classList.add('is-loading');
   await calculateRouteToSelectedStop();
@@ -3237,6 +3249,10 @@ lineFilterSelect?.addEventListener('change', () => {
 basemapToggleBtn?.addEventListener('click', () => {
   isSatelliteMode = !isSatelliteMode;
   applyBasemapMode();
+});
+
+trafficLightsToggleBtn?.addEventListener('click', () => {
+  setSemaforiEnabled(!semaforiEnabled);
 });
 
 startupAlertCloseBtn?.addEventListener('click', () => {
@@ -3260,7 +3276,7 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-// ── Route option card clicks ──
+// Route option card clicks
 routeOptionsList?.addEventListener('click', async (event) => {
   if (event.target.closest('.route-option-more > summary')) {
     return;
@@ -3286,11 +3302,12 @@ routeOptionsList?.addEventListener('click', async (event) => {
   renderBusRouteSteps(selected);
   renderRouteOptionCards(currentRouteOptions, selected);
   setRouteSummary(
-    `Percorso selezionato: ${selected.transferCount > 0 ? `linee ${selected.routeId}→${selected.transferRouteId}` : `linea ${selected.routeId}`} · Partenza ${formatClockFromEta(selected.boardEtaSeconds)} · Arrivo ${formatClockFromEta(selected.destinationEtaSeconds)} · Totale ${formatDurationSeconds(selected.totalSeconds)}.`
+    `Percorso selezionato: ${selected.transferCount > 0 ? `linee ${selected.routeId}->${selected.transferRouteId}` : `linea ${selected.routeId}`} - Partenza ${formatClockFromEta(selected.boardEtaSeconds)} - Arrivo ${formatClockFromEta(selected.destinationEtaSeconds)} - Totale ${formatDurationSeconds(selected.totalSeconds)}.`
   );
+  renderNextJourneyTimes(selected);
 });
 
-// ── Destination stop select (hidden but used internally) ──
+// Destination stop select (hidden but used internally)
 destinationStopSelect?.addEventListener('change', () => {
   const selected = destinationStopSelect.value;
   const location = stopLocationById.get(selected);
@@ -3305,7 +3322,7 @@ destinationStopSelect?.addEventListener('change', () => {
   }
 });
 
-// ── Geocode search inputs with debounce ──
+// Geocode search inputs with debounce
 originSearchInput?.addEventListener('input', () => {
   scheduleSearch('origin', originSearchInput.value || '');
 });
@@ -3338,9 +3355,7 @@ document.addEventListener('click', (event) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
 // Mobile Bottom-Sheet Touch Drag
-// ═══════════════════════════════════════════════════════════
 
 if (sheetHandle && searchCard) {
   let dragStartY = 0;
@@ -3356,7 +3371,7 @@ if (sheetHandle && searchCard) {
     if (!isDragging) return;
     const deltaY = e.touches[0].clientY - dragStartY;
     if (deltaY > 0) {
-      // Dragging down — offset the card
+      // Dragging down - offset the card
       searchCard.style.transform = `translateY(${deltaY}px)`;
     }
   }, { passive: true });
@@ -3385,9 +3400,7 @@ if (sheetHandle && searchCard) {
   });
 }
 
-// ═══════════════════════════════════════════════════════════
 // Override: Auto-collapse after route calculation
-// ═══════════════════════════════════════════════════════════
 
 // Patch setRouteSummary to show summary wrap
 const _originalSetRouteSummary = setRouteSummary;
@@ -3397,16 +3410,17 @@ const _originalSetRouteSummary = setRouteSummary;
 // Patch: after renderBusRouteOnMap, collapse search card
 const _originalRenderBusRouteOnMap = renderBusRouteOnMap;
 // We can't reassign const, so we wrap via the existing flow.
-// Instead, we hook the routeNowBtn click to collapse after completion — already done above.
+// Instead, we hook the routeNowBtn click to collapse after completion - already done above.
 
-// ═══════════════════════════════════════════════════════════
 // Initialization
-// ═══════════════════════════════════════════════════════════
 
 // Show all buses on map (Zero-UI: no line filtering)
 showAllOnMap = true;
 
+loadSemaforiPreference();
+syncSemaforiToggleUi();
 initMap();
+enableSemaforiLayer();
 openStartupAlertModal();
 loadData();
 startAutoRefresh();
