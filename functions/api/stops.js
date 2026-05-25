@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 function buildEmptyStopsPayload() {
   return {
     updatedAt: new Date().toISOString(),
@@ -60,7 +59,7 @@ export async function onRequestGet(context) {
     });
   }
 }
-=======
+
 function buildEmptyStopsPayload() {
   return {
     updatedAt: new Date().toISOString(),
@@ -122,4 +121,3 @@ export async function onRequestGet(context) {
     });
   }
 }
->>>>>>> ff93ec6ddcc06cfcbd23f1c51c80b2faf09cd21f
