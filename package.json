@@ -15,20 +15,3 @@
     "linkedom": "^0.18.12"
   }
 }
-{
-  "name": "api-muvt-linea-20-live",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "adm-zip": "^0.5.16",
-    "jszip": "^3.10.1"
-  },
-  "scripts": {
-    "start": "node server.mjs",
-    "test": "node test-feed-parser.mjs"
-  },
-  "devDependencies": {
-    "linkedom": "^0.18.12"
-  }
-}
