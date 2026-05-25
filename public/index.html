@@ -1,0 +1,216 @@
+﻿<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>AMTAB LIVE Trasporto Pubblico Bari</title>
+    <meta name="description" content="Traccia autobus AMTAB in tempo reale sulla mappa di Bari. Calcola percorsi, orari e fermate." />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+
+    <!-- FULL-SCREEN MAP -->
+    <div id="map"></div>
+
+    <!-- FEED STATUS TOAST -->
+    <div id="feedBanner" class="feed-toast" hidden>
+      <span id="feedBannerText"></span>
+      <button id="feedBannerDismiss" type="button" aria-label="Chiudi">×</button>
+    </div>
+
+    <!-- BUS ACTION CARD -->
+    <div id="busActionCard" class="bus-action" hidden>
+      <div class="bus-action__header">
+        <div class="bus-action__title-wrap">
+          <p id="busActionTitle" class="bus-action__title">Bus selezionato</p>
+          <p id="busActionSubtitle" class="bus-action__subtitle"></p>
+        </div>
+        <button id="busActionCloseBtn" class="bus-action__close" type="button" aria-label="Chiudi">×</button>
+      </div>
+      <div id="busActionMeta" class="bus-action__meta"></div>
+      <div class="bus-action__actions">
+        <button id="busTrackBtn" class="bus-action__btn" type="button">Tieni traccia</button>
+        <button id="busCenterBtn" class="bus-action__btn bus-action__btn--ghost" type="button">Centra</button>
+      </div>
+    </div>
+
+    <!-- STREET VIEW PANEL -->
+    <div id="streetViewPanel" class="street-view-panel" hidden>
+      <div class="street-view-panel__header">
+        <span class="street-view-panel__title">Street View</span>
+        <button id="streetViewCloseBtn" class="street-view-panel__close" type="button">Torna alla mappa</button>
+      </div>
+      <div id="streetViewMap" class="street-view-panel__map"></div>
+      <div id="streetViewStatus" class="street-view-panel__status" hidden></div>
+    </div>
+
+    <!-- ═══ STARTUP ALERT MODAL ═══ -->
+    <div id="startupAlertModal" class="startup-alert-modal" hidden>
+      <div class="startup-alert-modal__backdrop" data-close-startup-alert="1"></div>
+      <div class="startup-alert-modal__panel" role="dialog" aria-modal="true" aria-label="Avviso AMTAB / AMTAB Notice">
+        <button id="startupAlertCloseBtn" class="startup-alert-modal__close" type="button" aria-label="Chiudi / Close">×</button>
+        <div class="alert-content">
+          <h3>⚠️ Attenzione: Variazione Capolinea</h3>
+          <p>A causa dei lavori di riqualificazione presso la Stazione di Bari Centrale, i capolinea di alcune linee potrebbero subire variazioni temporanee. Si raccomanda di verificare sempre la destinazione finale indicata sul veicolo.</p>
+          
+          <h3 style="margin-top: 1rem;">⚠️ Warning: Terminus Relocation</h3>
+          <p>Due to ongoing redevelopment work at Bari Centrale Station, the terminuses for several bus lines have been temporarily relocated. Please always check the final destination displayed on the vehicle.</p>
+          
+          <a href="https://www.amtab.it/it/140-news-chatbot/3349-differimento-capolinea-e-fermate-lavori-di-riqualificazione-della-stazione-bari-centrale" target="_blank" class="amtab-link">
+            Consulta gli avvisi ufficiali AMTAB / Official AMTAB Notices ↗
+          </a>
+        </div>
+      </div>
+    </div>
+    <!-- FLOATING MAP CONTROLS -->
+    <div class="floating-controls">
+      <label class="line-filter-pill" for="lineFilterSelect" aria-label="Filtro linea bus">
+        <span class="line-filter-pill__label">Linea</span>
+        <select id="lineFilterSelect">
+          <option value="all">Tutte</option>
+        </select>
+      </label>
+    </div>
+
+    <button id="basemapToggleBtn" class="basemap-toggle" type="button" aria-label="Cambia mappa" title="Cambia mappa">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"></path>
+      </svg>
+    </button>
+    <button id="trafficLightsToggleBtn" class="traffic-lights-toggle" type="button" aria-label="Mostra o nascondi semafori" title="Semafori attivi">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="8" y="2" width="8" height="20" rx="3"></rect>
+        <circle cx="12" cy="7" r="1.6"></circle>
+        <circle cx="12" cy="12" r="1.6"></circle>
+        <circle cx="12" cy="17" r="1.6"></circle>
+      </svg>
+    </button>
+    <button id="simulatedToggleBtn" class="simulated-toggle" type="button" aria-label="Mostra o nascondi bus simulati" title="Bus simulati attivi">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="4" y="6" width="16" height="12" rx="2"></rect>
+        <path d="M7 18v2M17 18v2"></path>
+        <path d="M7 10h10"></path>
+      </svg>
+    </button>
+    <button id="streetViewToggleBtn" class="street-view-toggle" type="button" aria-label="Apri Street View" title="Street View">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="7" r="3"></circle>
+        <path d="M5.5 21a6.5 6.5 0 0 1 13 0"></path>
+        <path d="M2 12h4M18 12h4"></path>
+      </svg>
+    </button>
+    <!-- FLOATING SEARCH CARD -->
+    <div id="searchCard" class="search-card">
+      <!-- Drag handle for mobile bottom-sheet -->
+      <div class="search-card__handle" id="sheetHandle">
+        <span class="search-card__handle-bar"></span>
+      </div>
+
+      <div class="search-card__header">
+        <h1 class="search-card__brand">SmartMove</h1>
+        <span class="search-card__subtitle">Bari</span>
+        <button id="searchCardCollapseBtn" class="search-card__collapse-btn" type="button" aria-label="Chiudi pannello" title="Chiudi pannello">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="search-card__body" id="searchCardBody">
+        <div class="search-card__inputs">
+          <!-- Origin -->
+          <div class="input-row">
+            <div class="input-dot input-dot--origin"></div>
+            <div class="input-field-wrap">
+              <input
+                id="originSearchInput"
+                type="text"
+                placeholder="Partenza"
+                autocomplete="off"
+                aria-label="Indirizzo di partenza"
+              />
+              <button id="locateBtn" class="input-action-btn" type="button" aria-label="Usa posizione GPS" title="Usa la mia posizione">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+              </button>
+              <div id="originSearchResults" class="geocode-results" hidden></div>
+            </div>
+          </div>
+
+          <!-- Swap button -->
+          <button id="swapBtn" class="swap-btn" type="button" aria-label="Inverti partenza e arrivo" title="Inverti">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
+          </button>
+
+          <!-- Destination -->
+          <div class="input-row">
+            <div class="input-dot input-dot--dest"></div>
+            <div class="input-field-wrap">
+              <input
+                id="destinationSearchInput"
+                type="text"
+                placeholder="Destinazione"
+                autocomplete="off"
+                aria-label="Indirizzo di arrivo"
+              />
+              <div id="destinationSearchResults" class="geocode-results" hidden></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Route action -->
+        <button id="routeNowBtn" class="route-btn" type="button">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          Calcola percorso
+        </button>
+
+        <!-- Recent destinations -->
+        <div id="recentDestinations" class="recent-destinations" hidden>
+          <div class="recent-destinations__header">
+            <span>Destinazioni recenti</span>
+            <button id="clearRecentDestinations" type="button">Svuota</button>
+          </div>
+          <div id="recentDestinationsList" class="recent-destinations__list"></div>
+        </div>
+
+        <!-- Route summary (appears after route calc) -->
+        <div id="routeSummaryWrap" class="route-summary" hidden>
+          <p id="routeSummaryText" class="route-summary__text"></p>
+          <div id="nextJourneyTimes" class="next-journey-times" hidden></div>
+          <div id="routeOptionsList" class="route-options"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MINIMIZED ROUTE PILL (visible after route collapse) -->
+    <button id="editRouteBtn" class="edit-route-pill" type="button" hidden>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      Modifica percorso
+    </button>
+
+    <!-- HIDDEN INTERNAL STATE ELEMENTS (preserved for app.js logic) -->
+    <select id="lineSelect" class="sr-only" aria-hidden="true"></select>
+    <select id="destinationStopSelect" class="sr-only" aria-hidden="true"></select>
+    <input id="allowTransfers" type="checkbox" checked class="sr-only" aria-hidden="true" />
+    <input id="routeAutoRefresh" type="checkbox" checked class="sr-only" aria-hidden="true" />
+    <span id="mapDestinationText" class="sr-only" aria-hidden="true"></span>
+    <span id="message" class="sr-only" aria-hidden="true"></span>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
