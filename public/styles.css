@@ -380,6 +380,7 @@ html, body {
   border-color: rgba(148, 163, 184, 0.3);
 }
 
+<<<<<<< HEAD
 .simulated-toggle {
   position: fixed;
   right: 14px;
@@ -595,6 +596,8 @@ html, body {
   border: 1px solid rgba(148, 163, 184, 0.22);
 }
 
+=======
+>>>>>>> ff93ec6ddcc06cfcbd23f1c51c80b2faf09cd21f
 /* ── Floating Search Card (Glassmorphism) ───────────────── */
 .search-card {
   position: fixed;
@@ -856,6 +859,7 @@ html, body {
   line-height: 1.45;
 }
 
+<<<<<<< HEAD
 .recent-destinations {
   display: flex;
   flex-direction: column;
@@ -910,6 +914,8 @@ html, body {
   background: rgba(56, 189, 248, 0.12);
 }
 
+=======
+>>>>>>> ff93ec6ddcc06cfcbd23f1c51c80b2faf09cd21f
 .next-journey-times {
   display: flex;
   flex-wrap: wrap;
@@ -1133,10 +1139,13 @@ html, body {
   box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
 }
 
+<<<<<<< HEAD
 .bus-marker--tracked .bus-marker__badge {
   box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.45), 0 0 18px rgba(56, 189, 248, 0.4);
 }
 
+=======
+>>>>>>> ff93ec6ddcc06cfcbd23f1c51c80b2faf09cd21f
 .simulated-label {
   display: inline-flex;
   align-items: center;
@@ -1343,6 +1352,7 @@ html, body {
     height: 40px;
   }
 
+<<<<<<< HEAD
   .simulated-toggle {
     right: 12px;
     bottom: 110px;
@@ -1364,6 +1374,8 @@ html, body {
     bottom: 96px;
   }
 
+=======
+>>>>>>> ff93ec6ddcc06cfcbd23f1c51c80b2faf09cd21f
   .startup-alert-modal {
     align-items: flex-end;
     padding: 10px;
